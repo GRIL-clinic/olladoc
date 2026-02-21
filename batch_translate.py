@@ -1,35 +1,40 @@
 """
 Usage:
-    python batch_translate.py ./pdfs ./translated --source-lang Spanish
+    python batch_translate.py ./short-docs ./short-translated --source-lang Spanish
 """
 
 from pathlib import Path
-from pdf_translate import Translator, PDFTranslator
+from translate import Translator, DocumentTranslator
+
+SUPPORTED_EXTENSIONS = {".docx"}
 
 
-def batch_translate(input_dir, output_dir, source_lang,
+def batch_translate(input_dir, output_dir, source_lang="Spanish",
                     target_lang="English", model="translategemma",
-                    ocr_langs="spa+eng"):
+                    glossary=None):
     input_path = Path(input_dir)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    pdfs = sorted(input_path.glob("*.pdf"))
-    print(f"Found {len(pdfs)} PDF(s) in {input_dir}")
+    files = sorted(
+        f for f in input_path.iterdir()
+        if f.suffix.lower() in SUPPORTED_EXTENSIONS
+    )
+    print(f"Found {len(files)} .docx file(s) in {input_dir}")
 
-    if not pdfs:
+    if not files:
         return []
 
-    t = Translator(source_lang=source_lang, target_lang=target_lang, model=model)
-    pdf = PDFTranslator(t, ocr_langs=ocr_langs)
+    t = Translator(source_lang=source_lang, target_lang=target_lang, model=model,
+                   glossary=glossary)
+    dt = DocumentTranslator(t)
 
     results = []
-    for i, filepath in enumerate(pdfs):
-        print(f"\n[{i+1}/{len(pdfs)}] {filepath.name}")
-        out_file = output_path / f"{filepath.stem}_translated.txt"
-
+    for i, filepath in enumerate(files):
+        print(f"\n[{i+1}/{len(files)}] {filepath.name}")
+        out_file = output_path / f"{filepath.stem}_translated.docx"
         try:
-            meta = pdf.translate_file(str(filepath), str(out_file))
+            meta = dt.translate_to_docx(str(filepath), str(out_file))
             results.append(meta)
         except Exception as e:
             print(f"  Error: {e}")
@@ -42,17 +47,16 @@ def batch_translate(input_dir, output_dir, source_lang,
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Batch translate PDFs")
-    parser.add_argument("input_dir", help="Directory containing PDFs")
+    parser = argparse.ArgumentParser(description="Batch translate Word documents")
+    parser.add_argument("input_dir", help="Directory containing Word documents")
     parser.add_argument("output_dir", help="Directory for translated output")
     parser.add_argument("--source-lang", default="Spanish")
     parser.add_argument("--target-lang", default="English")
     parser.add_argument("--model", default="translategemma")
-    parser.add_argument("--ocr-langs", default="spa+eng")
     args = parser.parse_args()
 
     batch_translate(
         args.input_dir, args.output_dir,
         source_lang=args.source_lang, target_lang=args.target_lang,
-        model=args.model, ocr_langs=args.ocr_langs,
+        model=args.model,
     )
