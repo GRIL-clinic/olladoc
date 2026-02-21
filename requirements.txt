@@ -1,0 +1,6 @@
+PyMuPDF
+pytesseract
+Pillow
+ollama
+msal
+requests
