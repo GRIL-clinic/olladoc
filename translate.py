@@ -473,3 +473,21 @@ def translate_docx(filepath, output_path, source_lang="Spanish",
                    glossary=glossary)
     dt = DocumentTranslator(t)
     return dt.translate_to_docx(filepath, output_path)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Translate a Word document")
+    parser.add_argument("input_docx", help="Path to the input .docx file")
+    parser.add_argument("output_docx", help="Path for the translated output .docx")
+    parser.add_argument("--source-lang", default="Spanish")
+    parser.add_argument("--target-lang", default="English")
+    parser.add_argument("--model", default="translategemma")
+    args = parser.parse_args()
+
+    translate_docx(
+        args.input_docx, args.output_docx,
+        source_lang=args.source_lang, target_lang=args.target_lang,
+        model=args.model,
+    )
