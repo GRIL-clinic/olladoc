@@ -13,6 +13,7 @@ import ollama
 from pathlib import Path
 from docx import Document
 from lxml import etree
+from prompts import TRANSLATEGEMMA_PROMPT, DEFAULT_PROMPT, GLOSSARY_SECTION
 
 
 class Translator:
@@ -43,36 +44,26 @@ class Translator:
         self.model_temp = model_temp  # Low temp for more faithful translations
         self.glossary = glossary or {}
 
-    def _glossary_instruction(self):
-        if not self.glossary:
-            return ""
-        entries = "\n".join(f"  {src} → {tgt}" for src, tgt in self.glossary.items())
-        return f"\nUse the following glossary for specific terms:\n{entries}\n"
-
     def _build_prompt(self, text):
-        glossary = self._glossary_instruction()
+        if self.glossary:
+            glossary_entries = "\n".join(f"  {src} → {tgt}" for src, tgt in self.glossary.items())
+            glossary_section = GLOSSARY_SECTION.format(glossary_entries=glossary_entries)
+        else:
+            glossary_section = ""
         if "translategemma" in self.model:
-            src_code = self.GEMMA_LANG_CODES.get(self.source_lang, "es")
-            tgt_code = self.GEMMA_LANG_CODES.get(self.target_lang, "en")
-            return (
-                f"You are a professional {self.source_lang} ({src_code}) to "
-                f"{self.target_lang} ({tgt_code}) translator. "
-                f"Your goal is to accurately convey the meaning and nuances of "
-                f"the original {self.source_lang} text while adhering to "
-                f"{self.target_lang} grammar, vocabulary, and cultural "
-                f"sensitivities.\n"
-                f"Produce only the {self.target_lang} translation, without any "
-                f"additional explanations or commentary."
-                f"{glossary} "
-                f"Please translate the following {self.source_lang} text into "
-                f"{self.target_lang}:\n"
-                f"\n\n{text}"
+            return TRANSLATEGEMMA_PROMPT.format(
+                source_lang=self.source_lang,
+                target_lang=self.target_lang,
+                src_code=self.GEMMA_LANG_CODES.get(self.source_lang, "es"),
+                tgt_code=self.GEMMA_LANG_CODES.get(self.target_lang, "en"),
+                glossary_section=glossary_section,
+                text=text,
             )
-        return (
-            f"Translate the following {self.source_lang} text into "
-            f"{self.target_lang}.\n"
-            f"Output ONLY the translation, nothing else."
-            f"{glossary}\n\n{text}"
+        return DEFAULT_PROMPT.format(
+            source_lang=self.source_lang,
+            target_lang=self.target_lang,
+            glossary_section=glossary_section,
+            text=text,
         )
 
     def translate(self, text):
@@ -187,21 +178,31 @@ class FootnoteTranslator:
                         texts.append(t.text)
                 text = "".join(texts).strip()
                 if text:
-                    footnotes.append({"number": fn_id, "text": text})
+                    footnotes.append({"number": str(len(footnotes) + 1), "text": text})
 
         print(f"Extracted {len(footnotes)} footnotes from {filepath}")
         return footnotes
 
-    def translate_to_docx(self, filepath, output_path):
-        """Extract footnotes, translate them, and save as a docx table."""
-        footnotes = self.extract(filepath)
-        if not footnotes:
-            return {"input": filepath, "output": output_path, "total_footnotes": 0}
+    def translate(self, footnotes):
+        """Translate a list of extracted footnotes.
 
+        Args:
+            footnotes: list of {"number": str, "text": str}
+        Returns:
+            The same list, with "translation" added to each dict.
+        """
         print(f"  Translating {len(footnotes)} footnotes...")
         for fn in footnotes:
             fn["translation"] = self.translator.translate(fn["text"])
+        return footnotes
 
+    def save_to_docx(self, footnotes, output_path):
+        """Save translated footnotes as a docx table.
+
+        Args:
+            footnotes: list of {"number": str, "text": str, "translation": str}
+            output_path: path for the output .docx
+        """
         doc = Document()
         doc.add_paragraph("Translated Footnotes")
         table = doc.add_table(rows=1, cols=3)
@@ -217,6 +218,15 @@ class FootnoteTranslator:
 
         doc.save(output_path)
         print(f"Saved translated footnotes to {output_path}")
+
+    def translate_to_docx(self, filepath, output_path):
+        """Extract footnotes, translate them, and save as a docx table."""
+        footnotes = self.extract(filepath)
+        if not footnotes:
+            return {"input": filepath, "output": output_path, "total_footnotes": 0}
+
+        self.translate(footnotes)
+        self.save_to_docx(footnotes, output_path)
 
         return {
             "input": filepath,
@@ -278,13 +288,20 @@ class CommentTranslator:
         root = comments_part._element
         comment_elems = root.findall(f"{{{self._W}}}comment")
 
+        # Build a map of comment id -> position in document body
+        body = doc.element.body
+        body_order = {}
+        for i, elem in enumerate(body.iter()):
+            if elem.tag == f"{{{self._W}}}commentRangeStart":
+                body_order[elem.get(f"{{{self._W}}}id")] = i
+
         comments = []
         for elem in comment_elems:
             cid = elem.get(f"{{{self._W}}}id")
             author = elem.get(f"{{{self._W}}}author", "")
             date = elem.get(f"{{{self._W}}}date", "")
             text = self._get_comment_text(elem)
-            anchor = self._get_anchor_text(doc.element.body, cid)
+            anchor = self._get_anchor_text(body, cid)
 
             if text:
                 comments.append({
@@ -295,6 +312,7 @@ class CommentTranslator:
                     "anchor": anchor,
                 })
 
+        comments.sort(key=lambda c: body_order.get(c["id"], float("inf")))
         print(f"Extracted {len(comments)} comments from {filepath}")
         return comments
 
