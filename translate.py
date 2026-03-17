@@ -395,23 +395,114 @@ class DocumentTranslator:
         table_idx = 0
         parts = []
 
+        # helper to find the Document.paragraph that corresponds to a body <p>
+        paras = list(doc.paragraphs)
+        para_iter = iter(paras)
+
         for child in body:
             if child.tag == f"{{{cls._W}}}tbl":
                 table_idx += 1
                 parts.append(f"[TABLE {table_idx}]")
             elif child.tag == f"{{{cls._W}}}p":
-                para_text = ""
-                for elem in child.iter():
-                    if elem.tag == f"{{{cls._W}}}t" and elem.text:
-                        para_text += elem.text
-                    elif elem.tag == f"{{{cls._W}}}footnoteReference":
-                        fn_id = elem.get(f"{{{cls._W}}}id")
-                        if fn_id:
-                            para_text += fn_id
-                if para_text.strip():
-                    parts.append(para_text)
+                # find the next paragraph object whose xml element matches this child
+                para_obj = None
+                try:
+                    while True:
+                        candidate = next(para_iter)
+                        if candidate._p is child:
+                            para_obj = candidate
+                            break
+                except StopIteration:
+                    para_obj = None
+
+                if para_obj is None:
+                    # fallback: extract plain text from xml as before
+                    para_text = ""
+                    for elem in child.iter():
+                        if elem.tag == f"{{{cls._W}}}t" and elem.text:
+                            para_text += elem.text
+                        elif elem.tag == f"{{{cls._W}}}footnoteReference":
+                            fn_id = elem.get(f"{{{cls._W}}}id")
+                            if fn_id:
+                                para_text += fn_id
+                    if para_text.strip():
+                        parts.append(para_text)
+                else:
+                    md = cls._serialize_paragraph(para_obj)
+                    if md.strip():
+                        parts.append(md)
 
         return parts, table_idx
+
+    @staticmethod
+    def _serialize_paragraph(para):
+        """Convert a docx paragraph into a Markdown-like string that preserves
+        heading level and basic run-level formatting (bold, italic).
+        """
+        text_parts = []
+        for run in para.runs:
+            txt = run.text or ""
+            if not txt:
+                continue
+            if run.bold:
+                txt = f"**{txt}**"
+            if run.italic:
+                txt = f"*{txt}*"
+            text_parts.append(txt)
+
+        content = "".join(text_parts).strip()
+        # detect heading style names like 'Heading 1', 'Heading 2'
+        try:
+            style_name = (para.style.name or "").strip()
+        except Exception:
+            style_name = ""
+
+        m = re.match(r"Heading\s*(\d+)", style_name, re.IGNORECASE)
+        if m:
+            level = max(1, min(6, int(m.group(1))))
+            return "#" * level + " " + content if content else ""
+
+        return content
+
+    @staticmethod
+    def _write_markdown_paragraph(doc, md_text):
+        """Parse a Markdown-like paragraph and append it to `doc` with runs
+        preserving bold and italic formatting. Supports heading levels (#).
+        """
+        md_text = md_text or ""
+        # Handle table placeholders verbatim
+        if re.match(r"^\[TABLE\s+\d+\]$", md_text.strip()):
+            p = doc.add_paragraph(md_text)
+            return
+
+        heading = re.match(r"^(#{1,6})\s+(.*)$", md_text)
+        if heading:
+            level = len(heading.group(1))
+            content = heading.group(2)
+            p = doc.add_paragraph()
+            # apply built-in heading style if available
+            try:
+                p.style = f"Heading {level}"
+            except Exception:
+                pass
+        else:
+            content = md_text
+            p = doc.add_paragraph()
+
+        # split by bold/italic markers while preserving them
+        token_re = re.compile(r"(\*\*.*?\*\*|\*.*?\*)")
+        parts = token_re.split(content)
+        for part in parts:
+            if not part:
+                continue
+            if part.startswith("**") and part.endswith("**") and len(part) >= 4:
+                r = p.add_run(part[2:-2])
+                r.bold = True
+            elif part.startswith("*") and part.endswith("*") and len(part) >= 2:
+                r = p.add_run(part[1:-1])
+                r.italic = True
+            else:
+                p.add_run(part)
 
     @staticmethod
     def _chunk_paragraphs(parts, max_chars=3000):
@@ -454,7 +545,8 @@ class DocumentTranslator:
 
         doc = Document()
         for chunk in translated_chunks:
-            doc.add_paragraph(chunk)
+            for line in chunk.split("\n"):
+                self._write_markdown_paragraph(doc, line)
         doc.save(output_path)
         print(f"Saved translated text to {output_path}")
 
