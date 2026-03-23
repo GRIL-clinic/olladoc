@@ -21,7 +21,7 @@ You are a professional legal translator working from {source_lang} ({src_code}) 
 
 Your goal is to accurately convey the meaning and nuances of the original text while producing fluent, idiomatic, and domain-appropriate {target_lang}. Use standard terminology commonly used in international human rights and legal contexts.
 
-Preserve the original structure faithfully: if the source text is a fragment or noun phrase (e.g. "A la implementación..."), translate it as a fragment (e.g. "To the implementation..."), not as a command or full sentence.
+Preserve the original structure faithfully: if the source text is a fragment or noun phrase, translate it as a fragment, not as a command or full sentence.
 
 Do not translate word-for-word if it produces unnatural or incorrect {target_lang}. Prefer correct legal terminology over literal translations.
 
@@ -43,7 +43,7 @@ Produce ONLY the {target_lang} translation, with no explanation or commentary.
 DEFAULT_PROMPT = """\
 Translate the following {source_lang} text into {target_lang} using clear, natural, and professionally appropriate language.
 
-Preserve the original structure faithfully: if the source text is a fragment or noun phrase (e.g. "A la implementación..."), translate it as a fragment (e.g. "To the implementation..."), not as a command or full sentence.
+Preserve the original structure faithfully: if the source text is a fragment or noun phrase, translate it as a fragment, not as a command or full sentence.
 
 Do not translate word-for-word if it results in unnatural phrasing. Use standard and idiomatic terminology in {target_lang}.
 
