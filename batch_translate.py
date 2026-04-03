@@ -1,12 +1,14 @@
 """
 Usage:
-    python batch_translate.py ./short-docs ./short-translated --source-lang Spanish
+    python batch_translate.py ./docs/short-pdfs ./translated-short-pdfs --source-lang Spanish
+    python batch_translate.py ./short-docs ./translated-short-docs --source-lang Spanish
 """
 
 from pathlib import Path
 from translate import Translator, DocumentTranslator
+from pdf_translate_pymupdf import translate_pdf
 
-SUPPORTED_EXTENSIONS = {".docx"}
+SUPPORTED_EXTENSIONS = {".docx", ".pdf"}
 
 
 def batch_translate(input_dir, output_dir, source_lang="Spanish",
@@ -20,7 +22,7 @@ def batch_translate(input_dir, output_dir, source_lang="Spanish",
         f for f in input_path.iterdir()
         if f.suffix.lower() in SUPPORTED_EXTENSIONS
     )
-    print(f"Found {len(files)} .docx file(s) in {input_dir}")
+    print(f"Found {len(files)} file(s) in {input_dir}")
 
     if not files:
         return []
@@ -34,7 +36,14 @@ def batch_translate(input_dir, output_dir, source_lang="Spanish",
         print(f"\n[{i+1}/{len(files)}] {filepath.name}")
         out_file = output_path / f"{filepath.stem}_translated.docx"
         try:
-            meta = dt.translate_to_docx(str(filepath), str(out_file))
+            if filepath.suffix.lower() == ".pdf":
+                meta = translate_pdf(
+                    str(filepath), str(out_file),
+                    source_lang=source_lang, target_lang=target_lang,
+                    model=model, glossary=glossary,
+                )
+            else:
+                meta = dt.translate_to_docx(str(filepath), str(out_file))
             results.append(meta)
         except Exception as e:
             print(f"  Error: {e}")
@@ -48,7 +57,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Batch translate Word documents")
-    parser.add_argument("input_dir", help="Directory containing Word documents")
+    parser.add_argument("input_dir", help="Directory containing .docx/.pdf files")
     parser.add_argument("output_dir", help="Directory for translated output")
     parser.add_argument("--source-lang", default="Spanish")
     parser.add_argument("--target-lang", default="English")
