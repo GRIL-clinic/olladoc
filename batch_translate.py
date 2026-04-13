@@ -5,8 +5,7 @@ Usage:
 """
 
 from pathlib import Path
-from translate import Translator, DocumentTranslator
-from pdf_translate_pymupdf import translate_pdf
+from translate import translate_pdf, translate_docx
 
 SUPPORTED_EXTENSIONS = {".docx", ".pdf"}
 
@@ -27,23 +26,17 @@ def batch_translate(input_dir, output_dir, source_lang="Spanish",
     if not files:
         return []
 
-    t = Translator(source_lang=source_lang, target_lang=target_lang, model=model,
-                   glossary=glossary)
-    dt = DocumentTranslator(t)
-
     results = []
     for i, filepath in enumerate(files):
         print(f"\n[{i+1}/{len(files)}] {filepath.name}")
         out_file = output_path / f"{filepath.stem}_translated.docx"
+        fn = translate_pdf if filepath.suffix.lower() == ".pdf" else translate_docx
         try:
-            if filepath.suffix.lower() == ".pdf":
-                meta = translate_pdf(
-                    str(filepath), str(out_file),
-                    source_lang=source_lang, target_lang=target_lang,
-                    model=model, glossary=glossary,
-                )
-            else:
-                meta = dt.translate_to_docx(str(filepath), str(out_file))
+            meta = fn(
+                str(filepath), str(out_file),
+                source_lang=source_lang, target_lang=target_lang,
+                model=model, glossary=glossary,
+            )
             results.append(meta)
         except Exception as e:
             print(f"  Error: {e}")

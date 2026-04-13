@@ -1,10 +1,8 @@
 """
-PDF Translation using PyMuPDF
-------------------------------
-Extracts structured content from a PDF (text paragraphs, tables, images,
-footnotes) and translates it to .docx, preserving heading hierarchy,
-paragraph boundaries, per-run italic/bold formatting, list-item titles,
-and footnote markers.
+PDF extractor (PyMuPDF)
+-----------------------
+Walks a PDF and produces a list of Blocks (Heading, BodyPara, ListItem,
+Footnote, ImageBlock, TablePlaceholder, Separator) plus raw table data.
 
 Pipeline:
 
@@ -14,55 +12,33 @@ Pipeline:
        y-gaps and formatting transitions.
     4. Blocks: classify each paragraph as Heading, BodyPara, ListItem,
        Footnote, ImageBlock, TablePlaceholder, or Separator.
-    5. Docx: translate and render each block by type.
 
-Body text, tables, and footnotes are rendered to three .docx
-files. Tables and footnotes are handled by TableTranslator and
-FootnoteTranslator from translate.py; this module only classifies
-them and hands off.
-
-Usage:
-    python pdf_translate_pymupdf.py input.pdf output.docx
+Footnotes are emitted inline as Footnote blocks and routed by
+DocumentTranslator to FootnoteTranslator; tables are routed to
+TableTranslator. Images render directly into the body docx.
 """
 
 import fitz
-import io
 import re
 from dataclasses import dataclass
-from docx import Document
-from docx.shared import Pt, Inches, RGBColor
-from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional
 
-from translate import Translator, TableTranslator, FootnoteTranslator
+from blocks import (Run, Heading, BodyPara, ListItem, Footnote, ImageBlock,
+                    TablePlaceholder, Separator, Block)
 
 fitz.no_recommend_layout = True
 
 
-_BLOCK_IDX_RE = re.compile(r'^\[(\d+)\]\s*')
 _ROMAN_HEADER_RE = re.compile(r'^[IVXLCDM]+\.\s*\S')
 _ROMAN_ONLY_RE = re.compile(r'^[IVXLCDM]+\.$')
 _LIST_ITEM_RE = re.compile(r'^\d+\)\s+\S')
-_LIST_MARKER_RE = re.compile(r'^\s*(\d+[\).])\s*')
 _LONE_MARKER_RE = re.compile(r'^(?:[*†‡§¶]+|\d+)$')
 _SEPARATOR_RE = re.compile(r'^[_\-–—=]{3,}$')
 _PAGE_NUMBER_RE = re.compile(r'^-?\s*\d+\s*-?$')
 _DASH_SEPARATOR_RE = re.compile(r'^[\.\s]*[-–—][\.\s]*')
 
 
-# ----- Data model ----------------------------------------------------------
-
-@dataclass
-class Run:
-    text: str
-    bold: bool = False
-    italic: bool = False
-    size: float = 0.0
-
-    @property
-    def stripped_len(self) -> int:
-        return len(self.text.strip())
-
+# ----- PDF-internal intermediate types -------------------------------------
 
 @dataclass
 class Line:
@@ -115,63 +91,6 @@ class Paragraph:
             if r.italic:
                 it += c
         return bool(total) and it > total / 2
-
-
-@dataclass
-class Heading:
-    level: int
-    runs: List[Run]
-
-    @property
-    def text(self) -> str:
-        return re.sub(r'\s+', ' ', "".join(r.text for r in self.runs)).strip()
-
-
-@dataclass
-class BodyPara:
-    runs: List[Run]
-
-    @property
-    def text(self) -> str:
-        return re.sub(r'\s+', ' ', "".join(r.text for r in self.runs)).strip()
-
-
-@dataclass
-class ListItem:
-    title: str
-    body_runs: List[Run]
-    separator: str = " "
-    translated_title: Optional[str] = None
-
-    @property
-    def body_text(self) -> str:
-        return re.sub(r'\s+', ' ', "".join(r.text for r in self.body_runs)).strip()
-
-
-@dataclass
-class Footnote:
-    marker: str
-    text: str
-
-
-@dataclass
-class ImageBlock:
-    data: bytes
-    width_inches: float
-
-
-@dataclass
-class TablePlaceholder:
-    index: int
-
-
-@dataclass
-class Separator:
-    text: str
-
-
-Block = Union[Heading, BodyPara, ListItem, Footnote,
-              ImageBlock, TablePlaceholder, Separator]
 
 
 @dataclass
@@ -304,18 +223,6 @@ class PdfExtractor:
             or _LIST_ITEM_RE.match(curr.text)
         )
 
-    @staticmethod
-    def _consolidate_runs(runs: List[Run]) -> List[Run]:
-        out: List[Run] = []
-        for r in runs:
-            if out and out[-1].bold == r.bold and out[-1].italic == r.italic \
-                    and out[-1].size == r.size:
-                out[-1] = Run(text=out[-1].text + r.text, bold=r.bold,
-                              italic=r.italic, size=r.size)
-            else:
-                out.append(r)
-        return out
-
     @classmethod
     def _group_lines(cls, lines: List[Line]) -> List[Paragraph]:
         if not lines:
@@ -339,7 +246,7 @@ class PdfExtractor:
                     runs.append(Run(" ", bold=last.bold, italic=last.italic,
                                     size=last.size))
                 runs.extend(line.runs)
-            runs = cls._consolidate_runs(runs)
+            runs = Run.consolidate(runs)
             if not any(r.stripped_len for r in runs):
                 continue
             paragraphs.append(Paragraph(runs=runs, y0=group[0].y0,
@@ -516,7 +423,7 @@ class PdfExtractor:
             prev = out[-1]
             if isinstance(prev, BodyPara) and cls._is_continuation(prev.text, b.text):
                 joiner = Run(" ", size=prev.runs[-1].size if prev.runs else 0.0)
-                out[-1] = BodyPara(runs=cls._consolidate_runs(
+                out[-1] = BodyPara(runs=Run.consolidate(
                     prev.runs + [joiner] + list(b.runs)))
                 continue
             if isinstance(prev, ListItem) and cls._is_continuation(prev.body_text, b.text):
@@ -524,7 +431,7 @@ class PdfExtractor:
                     " ", size=prev.body_runs[-1].size if prev.body_runs else 0.0)
                 out[-1] = ListItem(
                     title=prev.title,
-                    body_runs=cls._consolidate_runs(
+                    body_runs=Run.consolidate(
                         prev.body_runs + [joiner] + list(b.runs)),
                     separator=prev.separator,
                 )
@@ -691,246 +598,3 @@ class PdfExtractor:
         all_blocks = self._fold_lone_markers(all_blocks)
         all_blocks = self._merge_body_continuations(all_blocks)
         return all_blocks, all_tables
-
-
-# ----- Translator ----------------------------------------------------------
-
-class PdfDocumentTranslator:
-    """Translates a list of Blocks and renders them to .docx."""
-
-    def __init__(self, translator):
-        self.translator = translator
-
-    # ---- translation ---------------------------------------------------
-
-    @staticmethod
-    def _chunk_body_paras(body_indices, blocks, max_chars=1500, max_blocks=3):
-        chunks: list[list[int]] = [[]]
-        current_len = 0
-        for i in body_indices:
-            text_len = len(blocks[i].text)
-            if chunks[-1] and (current_len + text_len + 1 > max_chars
-                               or len(chunks[-1]) >= max_blocks):
-                chunks.append([])
-                current_len = 0
-            chunks[-1].append(i)
-            current_len += text_len + 1
-        if not chunks[-1]:
-            chunks.pop()
-        return chunks
-
-    def _translate_chunk_indices(self, indices, blocks):
-        if len(indices) == 1:
-            i = indices[0]
-            return {i: self.translator.translate(blocks[i].text)}
-
-        lines = [f"[{n}] {blocks[i].text}" for n, i in enumerate(indices)]
-        raw = self.translator.translate("\n".join(lines))
-
-        parsed: dict[int, str] = {}
-        current_n = None
-        current_parts: list[str] = []
-        for line in raw.split("\n"):
-            m = _BLOCK_IDX_RE.match(line.strip())
-            if m:
-                n = int(m.group(1))
-                if 0 <= n < len(indices):
-                    if current_n is not None:
-                        parsed[current_n] = " ".join(current_parts).strip()
-                    current_n = n
-                    current_parts = [line.strip()[m.end():].strip()]
-                    continue
-            if current_n is not None:
-                current_parts.append(line.strip())
-        if current_n is not None:
-            parsed[current_n] = " ".join(current_parts).strip()
-
-        results: dict[int, str] = {}
-        for n, i in enumerate(indices):
-            src_text = blocks[i].text
-            cand = parsed.get(n, "")
-            ratio = len(cand) / max(len(src_text), 1)
-            if cand and 0.4 <= ratio <= 2.5:
-                results[i] = cand
-            else:
-                print(f"      Re-translating block {i} individually "
-                      f"(chunk alignment/length mismatch: {len(cand)}/{len(src_text)})")
-                results[i] = self.translator.translate(src_text)
-        return results
-
-    def _translate_blocks(self, blocks: List[Block]) -> dict:
-        results: dict = {}
-
-        for i, b in enumerate(blocks):
-            if isinstance(b, Heading):
-                results[i] = self.translator.translate(b.text)
-
-        li_blocks = [(i, b) for i, b in enumerate(blocks)
-                     if isinstance(b, ListItem)]
-        if li_blocks:
-            print(f"  Translating {len(li_blocks)} list-item(s)...")
-            for i, b in li_blocks:
-                title = self.translator.translate(b.title)
-                # Re-prepend a leading "N)" if Gemma dropped it.
-                m = _LIST_MARKER_RE.match(b.title)
-                if m and not _LIST_MARKER_RE.match(title):
-                    title = f"{m.group(1)} {title.lstrip()}"
-                body = self.translator.translate(b.body_text)
-                results[i] = (title, body)
-
-        body_idx = [i for i, b in enumerate(blocks) if isinstance(b, BodyPara)]
-        chunks = self._chunk_body_paras(body_idx, blocks)
-        print(f"  Translating {len(chunks)} body chunk(s) "
-              f"({len(body_idx)} paragraphs)...")
-        for ci, chunk in enumerate(chunks):
-            chars = sum(len(blocks[i].text) for i in chunk)
-            print(f"    Chunk {ci+1}/{len(chunks)} "
-                  f"({len(chunk)} block(s), {chars} chars)...")
-            results.update(self._translate_chunk_indices(chunk, blocks))
-
-        return results
-
-    # ---- rendering -----------------------------------------------------
-
-    def _render_heading(self, doc, block: Heading, translated: str):
-        heading = doc.add_heading(translated, level=min(block.level, 4))
-        any_italic = any(r.italic for r in block.runs if r.stripped_len)
-        for run in heading.runs:
-            run.font.color.rgb = RGBColor(0, 0, 0)
-            if any_italic:
-                run.italic = True
-
-    def _render_body(self, doc, block: BodyPara, translated: str):
-        para = doc.add_paragraph()
-        run = para.add_run(translated)
-        run.font.size = Pt(11)
-        strip_runs = [r for r in block.runs if r.stripped_len]
-        if strip_runs and all(r.bold for r in strip_runs):
-            run.bold = True
-        if strip_runs and all(r.italic for r in strip_runs):
-            run.italic = True
-
-    def _render_list_item(self, doc, block: ListItem,
-                          trans_title: str, trans_body: str):
-        para = doc.add_paragraph()
-        t = para.add_run(trans_title)
-        t.font.size = Pt(11)
-        t.italic = True
-        sep = para.add_run(block.separator)
-        sep.font.size = Pt(11)
-        b = para.add_run(trans_body)
-        b.font.size = Pt(11)
-
-    def _render_image(self, doc, block: ImageBlock):
-        try:
-            para = doc.add_paragraph()
-            run = para.add_run()
-            run.add_picture(io.BytesIO(block.data),
-                            width=Inches(block.width_inches))
-            return True
-        except Exception as e:
-            print(f"  Warning: could not insert image: {e}")
-            return False
-
-    # ---- orchestration -------------------------------------------------
-
-    def translate_to_docx(self, blocks: List[Block], tables: list,
-                          output_path: str) -> dict:
-        out_p = Path(output_path)
-        tables_path = str(out_p.parent / f"{out_p.stem}_tables{out_p.suffix}")
-        footnotes_path = str(out_p.parent / f"{out_p.stem}_footnotes{out_p.suffix}")
-
-        footnote_blocks = [b for b in blocks if isinstance(b, Footnote)]
-        image_blocks = [b for b in blocks if isinstance(b, ImageBlock)]
-        table_blocks = [b for b in blocks if isinstance(b, TablePlaceholder)]
-        chars_in = sum(len(b.text) for b in blocks if isinstance(b, BodyPara))
-        chars_in += sum(len(b.body_text) + len(b.title)
-                        for b in blocks if isinstance(b, ListItem))
-        chars_in += sum(len(b.text) for b in blocks if isinstance(b, Heading))
-
-        print(f"Extracted {len(blocks)} blocks "
-              f"({chars_in} chars, {len(table_blocks)} table(s), "
-              f"{len(image_blocks)} image(s), "
-              f"{len(footnote_blocks)} footnote(s))")
-
-        translated = self._translate_blocks(blocks)
-
-        doc = Document()
-        img_count = 0
-        for i, block in enumerate(blocks):
-            if isinstance(block, ImageBlock):
-                if self._render_image(doc, block):
-                    img_count += 1
-            elif isinstance(block, TablePlaceholder):
-                doc.add_paragraph(f"[TABLE {block.index}]")
-            elif isinstance(block, Separator):
-                doc.add_paragraph(block.text)
-            elif isinstance(block, Heading):
-                self._render_heading(doc, block, translated[i])
-            elif isinstance(block, ListItem):
-                t_title, t_body = translated[i]
-                self._render_list_item(doc, block, t_title, t_body)
-            elif isinstance(block, BodyPara):
-                self._render_body(doc, block, translated[i])
-        doc.save(output_path)
-        print(f"Saved translated text to {output_path}"
-              + (f" ({img_count} image(s) preserved)" if img_count else ""))
-
-        if footnote_blocks:
-            fn_dicts = [{"number": f.marker, "text": f.text}
-                        for f in footnote_blocks]
-            ft = FootnoteTranslator(self.translator)
-            ft.translate(fn_dicts)
-            ft.save_to_docx(fn_dicts, footnotes_path)
-
-        if tables:
-            print(f"  Translating {len(tables)} table(s)...")
-            tt = TableTranslator(self.translator)
-            translated_tables = tt.translate(tables)
-            tt.save_to_docx(translated_tables,
-                            set(range(len(translated_tables))), tables_path)
-
-        return {
-            "text_output": output_path,
-            "tables_output": tables_path if tables else None,
-            "footnotes_output": footnotes_path if footnote_blocks else None,
-            "total_blocks": len(blocks),
-            "total_tables": len(tables),
-            "total_images": len(image_blocks),
-            "total_footnotes": len(footnote_blocks),
-            "chars_in": chars_in,
-        }
-
-
-def translate_pdf(filepath, output_path, source_lang="Spanish",
-                  target_lang="English", model="translategemma",
-                  glossary=None):
-    extractor = PdfExtractor(filepath)
-    try:
-        blocks, tables = extractor.extract()
-    finally:
-        extractor.close()
-
-    t = Translator(source_lang=source_lang, target_lang=target_lang,
-                   model=model, glossary=glossary)
-    dt = PdfDocumentTranslator(t)
-    return dt.translate_to_docx(blocks, tables, output_path)
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Translate a PDF with formatting (PyMuPDF)")
-    parser.add_argument("input_pdf", help="Path to the input PDF file")
-    parser.add_argument("output_docx", help="Path for the translated output .docx")
-    parser.add_argument("--source-lang", default="Spanish")
-    parser.add_argument("--target-lang", default="English")
-    parser.add_argument("--model", default="translategemma")
-    args = parser.parse_args()
-
-    translate_pdf(
-        args.input_pdf, args.output_docx,
-        source_lang=args.source_lang, target_lang=args.target_lang,
-        model=args.model,
-    )
