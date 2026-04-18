@@ -32,6 +32,24 @@ _SENT_SPLIT_RE = re.compile(
     r'|(?<=[.!?])\s+'                      # plain sentence end
 )
 
+# Path to a log file that accumulates translation warnings (hallucinations,
+# prompt echoes, etc.). Callers can set this before starting a translation.
+WARNINGS_LOG_PATH: str | None = None
+
+
+def _log_warning(msg: str) -> None:
+    """Print a warning to stdout and, if WARNINGS_LOG_PATH is set, also
+    append it to that file."""
+    print(msg)
+    if WARNINGS_LOG_PATH:
+        try:
+            from datetime import datetime
+            with open(WARNINGS_LOG_PATH, "a", encoding="utf-8") as f:
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"[{ts}] {msg.strip()}\n")
+        except Exception:
+            pass
+
 
 def _translate_preserving_fn(text: str, translate_fn) -> str:
     """Translate text containing ‹FN{id}› markers.
@@ -153,7 +171,7 @@ class Translator:
             result = resp["message"]["content"].strip()
 
         if self._is_prompt_echo(result):
-            print(f"  Warning: prompt echo detected, keeping original text")
+            _log_warning(f"  Warning: prompt echo detected, keeping original text: {text[:80]!r}")
             return text
 
         return result
@@ -171,11 +189,47 @@ class TableTranslator:
             translated_rows = []
             for row in table:
                 translated_rows.append([
-                    self.translator.translate(cell) if cell.strip() else cell
+                    self._translate_cell(cell) if cell.strip() else cell
                     for cell in row
                 ])
             translated.append(translated_rows)
         return translated
+
+    def _translate_cell(self, cell: str, max_ratio: float = 4.0) -> str:
+        """Translate a table cell. If the result is drastically longer
+        than the source (LLM hallucination from a short input), retry
+        once at low temperature with explicit fragment instructions.
+        If still bad, fall back to the original text."""
+
+        def _looks_hallucinated(text):
+            return text and len(text) > len(cell) * max_ratio + 50
+
+        result = self.translator.translate(cell)
+        if _looks_hallucinated(result):
+            _log_warning(f"  Warning: table cell translation looks "
+                         f"hallucinated ({len(cell)} chars → {len(result)} "
+                         f"chars); retrying: {cell[:80]!r}")
+            # Retry with a stricter prompt and low temperature.
+            try:
+                prompt = (self.translator._build_prompt(cell)
+                          + "\n\nThis is a short fragment (table cell). "
+                          "Translate ONLY this text literally. Do not add "
+                          "any explanation, examples, or extra sentences.")
+                resp = ollama.chat(
+                    model=self.translator.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    options={"temperature": 0.1},
+                )
+                retry = resp["message"]["content"].strip()
+            except Exception as e:
+                _log_warning(f"  Retry failed: {e}")
+                retry = ""
+            if retry and not _looks_hallucinated(retry):
+                return retry
+            _log_warning(f"  Retry also hallucinated; keeping original: "
+                         f"{cell[:80]!r}")
+            return cell
+        return result
 
     def save_to_docx(self, translated_tables, referenced_indices, output_path):
         doc = Document()

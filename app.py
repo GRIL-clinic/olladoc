@@ -15,6 +15,7 @@ from pathlib import Path
 import requests
 import streamlit as st
 
+import translate
 from translate import Translator, translate_docx, translate_pdf
 
 OLLAMA_URL = "http://localhost:11434"
@@ -562,6 +563,20 @@ def _worker(uploads, source_lang, target_lang, model, tmp_p):
                 _JOB["outputs"].extend(_collect_outputs(result))
                 _JOB["totals"]["blocks"] += result.get("total_blocks", 0)
                 _JOB["totals"]["chars"] += result.get("chars_in", 0)
+
+            # Post-translation sanity check (docx only).
+            if suffix == ".docx":
+                try:
+                    from sanity_check import write_report
+                    wlog = _JOB.get("warnings_log")
+                    if wlog:
+                        n = write_report(str(in_path), str(out_path),
+                                         str(wlog))
+                        if n:
+                            print(f"  Sanity check: {n} issue(s) — see "
+                                  f"translation_warnings.log", file=stream)
+                except Exception as e:
+                    print(f"  Sanity check failed: {e}", file=stream)
         except Exception as e:
             print(f"  Error: {e}", file=stream)
             print(traceback.format_exc(), file=stream)
@@ -578,6 +593,8 @@ def _start_job(uploads, source_lang, target_lang, model,
     # Read all upload bytes upfront — UploadedFile objects don't survive reruns.
     payload = [(u.name, u.getvalue()) for u in uploads]
     tmp_ctx = tempfile.TemporaryDirectory()
+    warnings_log = Path(tmp_ctx.name) / "translation_warnings.log"
+    translate.WARNINGS_LOG_PATH = str(warnings_log)
     _JOB.update({
         "status": "running",
         "log": [],
@@ -590,6 +607,7 @@ def _start_job(uploads, source_lang, target_lang, model,
         "tmp_ctx": tmp_ctx,
         "settings": {"output_mode": output_mode, "output_dir": output_dir},
         "saved_paths": [],
+        "warnings_log": warnings_log,
     })
     t = threading.Thread(
         target=_worker,
@@ -651,6 +669,12 @@ def _render_results():
                 for p in outputs:
                     target = dest / p.name
                     shutil.copy2(p, target)
+                    saved.append(str(target))
+                # Also copy the warnings log if any warnings were logged.
+                wlog = _JOB.get("warnings_log")
+                if wlog and Path(wlog).exists() and Path(wlog).stat().st_size > 0:
+                    target = dest / "translation_warnings.log"
+                    shutil.copy2(wlog, target)
                     saved.append(str(target))
                 _JOB["saved_paths"] = saved
             except Exception as e:

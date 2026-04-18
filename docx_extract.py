@@ -390,10 +390,38 @@ class DocxExtractor:
                 continue
 
             if self._is_list_paragraph(para):
-                title_text = (para.text or "").split(None, 1)[0]
-                blocks.append(ListItem(
-                    title=title_text, body_runs=runs, separator=" "))
-                continue
+                # Only treat as ListItem if the text starts with an
+                # explicit marker (e.g. "a)", "1)", "2."). List Paragraph
+                # styles without an explicit marker are just regular
+                # paragraphs — treating them as ListItem would split the
+                # first word off as an italic "title", causing the first
+                # word to be duplicated in the output.
+                text = para.text or ""
+                if re.match(r'^\s*(?:[a-zA-Z]\)|\d+[\.\)])\s+\S', text):
+                    title_text = text.split(None, 1)[0]
+                    blocks.append(ListItem(
+                        title=title_text, body_runs=runs, separator=" "))
+                    continue
+                # Auto-numbered List Paragraph (numbering rendered by
+                # Word): try to resolve the number prefix and prepend it.
+                num_prefix = self._lookup_heading_number(
+                    "".join(r.text for r in runs))
+                if num_prefix:
+                    runs[0] = Run(
+                        text=num_prefix + " " + runs[0].text,
+                        bold=runs[0].bold,
+                        italic=runs[0].italic,
+                        size=runs[0].size,
+                    )
+                    # If the paragraph is all-bold + auto-numbered, it's
+                    # visually a heading. Promote it so the renderer
+                    # treats it as one. Depth of the number dictates level.
+                    all_bold = all(r.bold for r in runs if r.stripped_len)
+                    if all_bold:
+                        depth = num_prefix.count(".")
+                        level = max(2, min(4, depth + 1))
+                        blocks.append(Heading(level=level, runs=runs))
+                        continue
 
             blocks.append(BodyPara(runs=runs))
 
