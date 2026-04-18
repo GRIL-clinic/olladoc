@@ -27,6 +27,54 @@ from prompts import TRANSLATEGEMMA_PROMPT, DEFAULT_PROMPT, GLOSSARY_SECTION
 _BLOCK_IDX_RE = re.compile(r'^\[(\d+)\]\s*')
 _LIST_MARKER_RE = re.compile(r'^\s*(\d+[\).])\s*')
 _FN_MARKER_RE = re.compile(r'‹FN(\d+)›')
+_SENT_SPLIT_RE = re.compile(
+    r'(?<=[.!?][""\u201d\u2019\')])\s+'   # sentence end after closing quote
+    r'|(?<=[.!?])\s+'                      # plain sentence end
+)
+
+
+def _translate_preserving_fn(text: str, translate_fn) -> str:
+    """Translate text containing ‹FN{id}› markers.
+
+    Strips markers, translates the full text as one unit (preserving
+    context and quality), then re-inserts each marker at the end of
+    its corresponding sentence in the translation.
+    """
+    fn_matches = list(_FN_MARKER_RE.finditer(text))
+    if not fn_matches:
+        return translate_fn(text)
+
+    # Figure out which source sentence each FN belongs to.
+    clean_src = _FN_MARKER_RE.sub("", text)
+    src_sents = _SENT_SPLIT_RE.split(clean_src)
+    src_sents = [s for s in src_sents if s.strip()]
+
+    fn_map: list[tuple[int, str]] = []  # (source_sent_idx, fn_id)
+    for m in fn_matches:
+        offset = len(_FN_MARKER_RE.sub("", text[:m.start()]))
+        cumulative = 0
+        sent_idx = len(src_sents) - 1
+        for si, sent in enumerate(src_sents):
+            cumulative += len(sent) + 1
+            if offset < cumulative:
+                sent_idx = si
+                break
+        fn_map.append((sent_idx, m.group(1)))
+
+    # Translate the full clean text.
+    translated = translate_fn(clean_src)
+
+    # Split translation into sentences.
+    trans_sents = _SENT_SPLIT_RE.split(translated)
+    trans_sents = [s for s in trans_sents if s.strip()]
+
+    # Attach each FN to the corresponding sentence in the translation.
+    # If translation has fewer sentences, clamp to the last one.
+    for sent_idx, fn_id in fn_map:
+        idx = min(sent_idx, len(trans_sents) - 1)
+        trans_sents[idx] = trans_sents[idx].rstrip() + f"‹FN{fn_id}›"
+
+    return " ".join(trans_sents)
 
 
 class Translator:
@@ -79,13 +127,36 @@ class Translator:
             text=text,
         )
 
+    _PROMPT_LEAK = {"Use established legal phrasing",
+                    "Produce ONLY the", "Use standard domain terminology",
+                    "Output ONLY the translation"}
+
+    def _is_prompt_echo(self, result):
+        return any(phrase in result for phrase in self._PROMPT_LEAK)
+
     def translate(self, text):
+        prompt = self._build_prompt(text)
         resp = ollama.chat(
             model=self.model,
-            messages=[{"role": "user", "content": self._build_prompt(text)}],
+            messages=[{"role": "user", "content": prompt}],
             options={"temperature": self.model_temp},
         )
-        return resp["message"]["content"].strip()
+        result = resp["message"]["content"].strip()
+
+        if self._is_prompt_echo(result):
+            # Retry once with lower temperature.
+            resp = ollama.chat(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.1},
+            )
+            result = resp["message"]["content"].strip()
+
+        if self._is_prompt_echo(result):
+            print(f"  Warning: prompt echo detected, keeping original text")
+            return text
+
+        return result
 
 
 class TableTranslator:
@@ -288,7 +359,17 @@ class DocumentTranslator:
 
         for i, b in enumerate(blocks):
             if isinstance(b, Heading):
-                results[i] = self.translator.translate(b.text)
+                # Strip leading number prefix (e.g. "1.") before translating
+                # so the LLM doesn't drop it, then re-prepend after.
+                prefix = ""
+                text = b.text
+                m = re.match(r'^(\d+(?:\.\d+)*[\.\)]\s*)', text)
+                if m:
+                    prefix = m.group(1)
+                    text = text[m.end():]
+                translated = _translate_preserving_fn(
+                    text, self.translator.translate)
+                results[i] = prefix + translated
 
         li_blocks = [(i, b) for i, b in enumerate(blocks)
                      if isinstance(b, ListItem)]
@@ -299,13 +380,23 @@ class DocumentTranslator:
                 m = _LIST_MARKER_RE.match(b.title)
                 if m and not _LIST_MARKER_RE.match(title):
                     title = f"{m.group(1)} {title.lstrip()}"
-                body = self.translator.translate(b.body_text)
+                body = _translate_preserving_fn(
+                    b.body_text, self.translator.translate)
                 results[i] = (title, body)
 
         body_idx = [i for i, b in enumerate(blocks) if isinstance(b, BodyPara)]
-        chunks = self._chunk_body_paras(body_idx, blocks)
+        fn_idx = [i for i in body_idx if _FN_MARKER_RE.search(blocks[i].text)]
+        plain_idx = [i for i in body_idx if i not in set(fn_idx)]
+
+        if fn_idx:
+            print(f"  Translating {len(fn_idx)} paragraph(s) with footnotes...")
+            for i in fn_idx:
+                results[i] = _translate_preserving_fn(
+                    blocks[i].text, self.translator.translate)
+
+        chunks = self._chunk_body_paras(plain_idx, blocks)
         print(f"  Translating {len(chunks)} body chunk(s) "
-              f"({len(body_idx)} paragraphs)...")
+              f"({len(plain_idx)} paragraphs)...")
         for ci, chunk in enumerate(chunks):
             chars = sum(len(blocks[i].text) for i in chunk)
             print(f"    Chunk {ci+1}/{len(chunks)} "
@@ -318,10 +409,11 @@ class DocumentTranslator:
 
     def _render_heading(self, doc, block: Heading, translated: str):
         heading = doc.add_heading(translated, level=min(block.level, 4))
-        any_italic = any(r.italic for r in block.runs if r.stripped_len)
+        all_italic = (block.runs
+                      and all(r.italic for r in block.runs if r.stripped_len))
         for run in heading.runs:
             run.font.color.rgb = RGBColor(0, 0, 0)
-            if any_italic:
+            if all_italic:
                 run.italic = True
 
     @staticmethod
@@ -347,9 +439,34 @@ class DocumentTranslator:
     def _render_body(self, doc, block: BodyPara, translated: str):
         para = doc.add_paragraph()
         strip_runs = [r for r in block.runs if r.stripped_len]
-        bold = bool(strip_runs) and all(r.bold for r in strip_runs)
-        italic = bool(strip_runs) and all(r.italic for r in strip_runs)
-        self._emit_text_with_fn_refs(para, translated, bold=bold, italic=italic)
+        all_bold = bool(strip_runs) and all(r.bold for r in strip_runs)
+        all_italic = bool(strip_runs) and all(r.italic for r in strip_runs)
+
+        if all_bold or all_italic:
+            self._emit_text_with_fn_refs(
+                para, translated, bold=all_bold, italic=all_italic)
+            return
+
+        # Detect bold lead-in: first run(s) bold, rest not.
+        # Count how many sentences are bold in the source, bold that many in the translation.
+        if strip_runs and strip_runs[0].bold:
+            bold_text = "".join(r.text for r in strip_runs if r.bold)
+            bold_sents = _SENT_SPLIT_RE.split(bold_text)
+            n_bold = len([s for s in bold_sents if s.strip()]) or 1
+
+            trans_sents = _SENT_SPLIT_RE.split(translated)
+            trans_sents = [s for s in trans_sents if s.strip()]
+
+            if n_bold < len(trans_sents):
+                bold_part = " ".join(trans_sents[:n_bold])
+                rest_part = " ".join(trans_sents[n_bold:])
+                self._emit_text_with_fn_refs(para, bold_part, bold=True)
+                run = para.add_run(" ")
+                run.font.size = Pt(11)
+                self._emit_text_with_fn_refs(para, rest_part)
+                return
+
+        self._emit_text_with_fn_refs(para, translated)
 
     def _render_list_item(self, doc, block: ListItem,
                           trans_title: str, trans_body: str):

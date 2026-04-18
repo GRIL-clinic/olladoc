@@ -6,3 +6,4 @@ ollama
 msal
 requests
 python-docx
+streamlit
