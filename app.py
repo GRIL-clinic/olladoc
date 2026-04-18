@@ -589,6 +589,7 @@ def _start_job(uploads, source_lang, target_lang, model,
         "totals": {"blocks": 0, "chars": 0},
         "tmp_ctx": tmp_ctx,
         "settings": {"output_mode": output_mode, "output_dir": output_dir},
+        "saved_paths": [],
     })
     t = threading.Thread(
         target=_worker,
@@ -609,7 +610,7 @@ def _reset_job():
         "status": "idle", "log": [], "thread": None,
         "done_count": 0, "total_count": 0, "outputs": [],
         "failures": [], "totals": {"blocks": 0, "chars": 0},
-        "tmp_ctx": None, "settings": {},
+        "tmp_ctx": None, "settings": {}, "saved_paths": [],
     })
 
 
@@ -642,18 +643,22 @@ def _render_results():
 
     if outputs and settings.get("output_mode") == "Save to folder":
         dest = Path(settings["output_dir"]).expanduser()
-        try:
-            dest.mkdir(parents=True, exist_ok=True)
-            saved = []
-            for p in outputs:
-                target = dest / p.name
-                shutil.copy2(p, target)
-                saved.append(target)
+        # Only copy once per job
+        if not _JOB.get("saved_paths"):
+            try:
+                dest.mkdir(parents=True, exist_ok=True)
+                saved = []
+                for p in outputs:
+                    target = dest / p.name
+                    shutil.copy2(p, target)
+                    saved.append(str(target))
+                _JOB["saved_paths"] = saved
+            except Exception as e:
+                st.error(f"Could not write to {dest}: {e}")
+        if _JOB.get("saved_paths"):
             st.write("Saved:")
-            for p in saved:
-                st.code(str(p), language="text")
-        except Exception as e:
-            st.error(f"Could not write to {dest}: {e}")
+            for p in _JOB["saved_paths"]:
+                st.code(p, language="text")
 
 
 @st.fragment(run_every="1s")
