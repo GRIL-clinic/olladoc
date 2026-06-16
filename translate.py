@@ -131,16 +131,18 @@ class Translator:
     _VAR_PLACEHOLDER_RE = re.compile(r'⟪V(\d+)⟫')
 
     def __init__(self, source_lang, target_lang="English", model="translategemma",
-                 model_temp=0.3, glossary=None, verbose_glossary=False):
+                 model_temp=0.3, glossary=None, verbose_glossary=False,
+                 seed=42):
         self.source_lang = source_lang
         self.target_lang = target_lang
         # Default model is TranslateGemma:
         # https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/
         self.model = model
         self.model_temp = model_temp  # Low temp for more faithful translations
-        # When True, prints the glossary entries injected into each chunk's
-        # prompt — useful for understanding which rules fire per chunk.
+        # When True, prints the glossary entries injected into each chunk's prompt
         self.verbose_glossary = verbose_glossary
+        # When set, passed to ollama as `options.seed` for reproducibility.
+        self.seed = seed
 
         # Accept DomainGlossary, plain dict, or None.
         if isinstance(glossary, DomainGlossary):
@@ -232,11 +234,16 @@ class Translator:
 
     def _call_model(self, prompt: str, num_predict: int,
                     temp: float | None = None) -> str:
+        options = {
+            "temperature": temp if temp is not None else self.model_temp,
+            "num_predict": num_predict,
+        }
+        if self.seed is not None:
+            options["seed"] = self.seed
         resp = ollama.chat(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": temp if temp is not None else self.model_temp,
-                     "num_predict": num_predict},
+            options=options,
         )
         return resp["message"]["content"].strip()
 
@@ -280,6 +287,28 @@ class Translator:
 class TableTranslator:
     """Translates table cell data and renders the result to .docx."""
 
+    # Characters stripped before checking what's left. 
+    # If only digits, whitespace, currency symbols, common punctuation, ranges, or unit separators remain, 
+    # the cell is structural data that should be pass through.
+    _DATA_STRIP_RE = re.compile(r'[\d\s.,\-/+:%·–—$€£¥@#()\[\]]+')
+
+    @classmethod
+    def _is_pure_data_cell(cls, cell: str) -> bool:
+        """True if the cell is essentially numeric/code data.
+
+        Strips digits, whitespace, currency symbols, common punctuation, and date/range separators. 
+        If <=3 alphabetic chars remain, treat as data and skip translation (avoids LLM hallucinating around bare numbers).
+
+        Examples that match (pass-through):
+          "42", "$100", "2023", "01/15/2024", "12 kg", "CAT 1", "v2.1"
+        """
+        s = cell.strip()
+        if not s:
+            return False
+        stripped = cls._DATA_STRIP_RE.sub('', s)
+        alpha_only = ''.join(c for c in stripped if c.isalpha())
+        return len(alpha_only) <= 3
+
     def __init__(self, translator):
         self.translator = translator
 
@@ -295,6 +324,10 @@ class TableTranslator:
                     if not cell.strip():
                         new_row.append(cell)
                         continue
+                    # Skip cells that are essentially numbers / codes / dates
+                    if self._is_pure_data_cell(cell):
+                        new_row.append(cell)
+                        continue
                     key = cell.strip()
                     if key not in cache:
                         cache[key] = self._translate_cell(cell)
@@ -303,40 +336,56 @@ class TableTranslator:
             translated.append(translated_rows)
         return translated
 
+    # Phrases that, if they appear in a retry's output, mean the model echoed the retry instructions instead of translating.
+    _RETRY_ECHO_PHRASES = (
+        "This is a short fragment",
+        "table cell",
+        "Translate ONLY this text",
+        "Do not add any explanation",
+    )
+
     def _translate_cell(self, cell: str, max_ratio: float = 4.0) -> str:
-        """Translate a table cell. 
-        If the result is drastically longer than the source (LLM hallucination from a short input), 
-        retry once at low temperature with explicit fragment instructions.
+        """Translate a table cell.
+        If the result is drastically longer than the source (LLM hallucination from a short input), retry once at low temperature. 
         If still bad, fall back to the original text."""
 
         def _looks_hallucinated(text):
             return text and len(text) > len(cell) * max_ratio + 50
+
+        def _is_retry_echo(text):
+            return text and any(p in text for p in self._RETRY_ECHO_PHRASES)
 
         result = self.translator.translate(cell)
         if _looks_hallucinated(result):
             _log_warning(f"  Warning: table cell translation looks "
                          f"hallucinated ({len(cell)} chars → {len(result)} "
                          f"chars); retrying: {cell[:80]!r}")
-            # Retry with a stricter prompt and low temperature.
+            # Retry with low temperature, NO appended instructional text
+            # translategemma echoes such instructions verbatim into the output
+            # Just re-prompt at temp=0.1 with a tighter num_predict cap.
             try:
-                prompt = (self.translator._build_prompt(cell)
-                          + "\n\nThis is a short fragment (table cell). "
-                          "Translate ONLY this text literally. Do not add "
-                          "any explanation, examples, or extra sentences.")
+                prompt = self.translator._build_prompt(cell)
                 retry_cap = max(20, len(cell) // 2 + 10)
+                options = {"temperature": 0.1, "num_predict": retry_cap}
+                if self.translator.seed is not None:
+                    options["seed"] = self.translator.seed
                 resp = ollama.chat(
                     model=self.translator.model,
                     messages=[{"role": "user", "content": prompt}],
-                    options={"temperature": 0.1, "num_predict": retry_cap},
+                    options=options,
                 )
                 retry = resp["message"]["content"].strip()
             except Exception as e:
                 _log_warning(f"  Retry failed: {e}")
                 retry = ""
-            if retry and not _looks_hallucinated(retry):
+            if retry and not _looks_hallucinated(retry) and not _is_retry_echo(retry):
                 return retry
-            _log_warning(f"  Retry also hallucinated; keeping original: "
-                         f"{cell[:80]!r}")
+            if _is_retry_echo(retry):
+                _log_warning(f"  Retry echoed instruction text; keeping original: "
+                             f"{cell[:80]!r}")
+            else:
+                _log_warning(f"  Retry also hallucinated; keeping original: "
+                             f"{cell[:80]!r}")
             return cell
         return result
 
@@ -742,7 +791,7 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
                        target_lang="English", model="translategemma",
                        review_model=None, glossary=None,
                        verbose_glossary=False, phases=ALL_PHASES,
-                       force_rebuild=False):
+                       force_rebuild=False, dump_dir=None, seed=42):
     """Translate a .docx or .pdf file using the two-phase pipeline.
 
     Phases (pass as a tuple to `phases=`):
@@ -764,8 +813,13 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
       DomainGlossary — user-provided full glossary, merged into Phase 1.
       str | Path     — path to a glossary file; loaded as a user-provided glossary and merged into Phase 1.
 
-    `force_rebuild=True` deletes any pre-existing glossary file before Phase 1 runs, forcing a fresh LLM review. 
+    `force_rebuild=True` deletes any pre-existing glossary file before Phase 1 runs, forcing a fresh LLM review.
     Use this when you want to discard edits and re-derive the glossary from scratch.
+
+    `dump_dir` (Phase 1 only) — when set, every per-segment input, prompt, raw LLM response, and parsed result from Step 1a/1b plus the merged state and final entries get written to that directory. 
+    Phase 2 does not currently write any artifacts there. Useful for diffing prompt changes across runs.
+
+    `seed` — passed to ollama as `options.seed` for every LLM call (Step 1a/1b, Phase 2 per-chunk translation, table cell retries).
 
     Returns the translation result dict, or `{"glossary_path": ...}` when only Phase 1 ran.
     """
@@ -804,7 +858,8 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
             DomainGlossary.delete(glossary_path)
         glossary_pre_existed = glossary_path.exists()
         resolved = DocumentReviewer(review_model or model, source_lang,
-                                    target_lang).build_glossary(
+                                    target_lang, dump_dir=dump_dir,
+                                    seed=seed).build_glossary(
             blocks, user_glossary, glossary_path)
     elif PHASE_TRANSLATE in phases and not no_glossary:
         # Translate-only + glossary expected → require an existing file
@@ -833,7 +888,7 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
 
     t = Translator(source_lang=source_lang, target_lang=target_lang,
                    model=model, glossary=resolved,
-                   verbose_glossary=verbose_glossary)
+                   verbose_glossary=verbose_glossary, seed=seed)
     dt = DocumentTranslator(t)
     result = dt.translate_to_docx(blocks, tables, output_path)
     result["input"] = filepath
@@ -866,6 +921,8 @@ if __name__ == "__main__":
                         help="Delete any pre-existing glossary file before the build phase, forcing a fresh LLM review.")
     parser.add_argument("--no-glossary", action="store_true",
                         help="Run the translation without any glossary rules. Skips prompt injection and violation checks.")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Integer seed for ollama generation (default 42).")
     args = parser.parse_args()
 
     if args.phases is not None:
@@ -884,4 +941,5 @@ if __name__ == "__main__":
         phases=phases,
         force_rebuild=args.force_rebuild,
         glossary=False if args.no_glossary else None,
+        seed=args.seed,
     )

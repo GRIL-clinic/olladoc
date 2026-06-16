@@ -117,8 +117,9 @@ class DomainGlossary:
                     entries.append(GlossaryEntry([v], v, kind="verbatim"))
             elif kind_raw == "TRANSLATE" and target:
                 entries.append(GlossaryEntry(variants, target.strip(), kind="require"))
-            elif kind_raw == "PREFER" and target:
-                entries.append(GlossaryEntry(variants, target.strip(), kind="prefer"))
+            elif kind_raw == "PREFER":
+                tgt = target.strip() if target else variants[0]
+                entries.append(GlossaryEntry(variants, tgt, kind="prefer"))
         return entries
 
     def save(self, path: str | Path) -> None:
@@ -134,7 +135,12 @@ class DomainGlossary:
             elif entry.kind == "require":
                 lines.append(f"TRANSLATE: {src} → {entry.target}")
             else:
-                lines.append(f"PREFER: {src} → {entry.target}")
+                # PREFER: if target equals the canonical (placeholder used when Step 1b dropped the term), display without the "→ target" suffix
+                canonical = entry.source_terms[0] if entry.source_terms else ""
+                if entry.target and entry.target != canonical:
+                    lines.append(f"PREFER: {src} → {entry.target}")
+                else:
+                    lines.append(f"PREFER: {src}")
         Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
         print(f"  [glossary] written to {path}")
 

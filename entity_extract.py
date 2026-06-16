@@ -169,8 +169,14 @@ class DocumentReviewer:
         return False
 
     @staticmethod
-    def _all_text_blocks(blocks: list[Block]) -> list[str]:
-        """Flatten a Block list into a list of textual strings."""
+    def _all_text_blocks(blocks: list[Block],
+                        include_footnotes_comments: bool = True) -> list[str]:
+        """Flatten a Block list into a list of textual strings.
+
+        `include_footnotes_comments=False` excludes Footnote and Comment blocks from the output. 
+        Useful when feeding text to Step 1a, since footnotes are typically citations (Ibid., Serie C, case refs) that pollute the glossary, and comments are reviewer notes that aren't translation targets. 
+        Symbolic supplement (URL / snake_case extraction) still uses the default True so URLs in footnotes get captured.
+        """
         parts = []
         for b in blocks:
             if isinstance(b, Heading):
@@ -179,7 +185,7 @@ class DocumentReviewer:
                 parts.append(b.text)
             elif isinstance(b, ListItem):
                 parts.append(b.title + " " + b.body_text)
-            elif isinstance(b, (Footnote, Comment)):
+            elif isinstance(b, (Footnote, Comment)) and include_footnotes_comments:
                 parts.append(b.text)
         return parts
 
@@ -261,7 +267,8 @@ class DocumentReviewer:
     def __init__(self, model: str, source_lang: str, target_lang: str,
                  segment_chars: int = 6_000,
                  term_batch_size: int = 40,
-                 dump_dir: str | Path | None = None):
+                 dump_dir: str | Path | None = None,
+                 seed: int | None = 42):
         self.model = model
         self.source_lang = source_lang
         self.target_lang = target_lang
@@ -272,6 +279,8 @@ class DocumentReviewer:
         # When dump_dir is set, intermediate artifacts are written to disk for offline debugging.
         # See _SnapshotWriter for the layout.
         self._snap = _SnapshotWriter(dump_dir)
+        # When set, passed to ollama as `options.seed` so Step 1a/1b output is reproducible across runs
+        self.seed = seed
 
     @property
     def dump_dir(self) -> Path | None:
@@ -281,8 +290,13 @@ class DocumentReviewer:
     # ---- segmentation ----
 
     def _segment_text(self, blocks: list[Block]) -> list[str]:
-        """Split document text into segments, breaking on paragraph boundaries."""
-        parts = [p for p in self._all_text_blocks(blocks) if p.strip()]
+        """Split document text into segments, breaking on paragraph boundaries.
+
+        Step 1a sees only headings / body paragraphs / list items. 
+        Footnotes and comments are excluded.
+        """
+        parts = [p for p in self._all_text_blocks(blocks, include_footnotes_comments=False)
+                 if p.strip()]
         segments: list[str] = []
         current: list[str] = []
         current_len = 0
@@ -315,10 +329,13 @@ class DocumentReviewer:
             target_lang=self.target_lang,
             text=segment,
         )
+        options = {"temperature": 0.1, "num_predict": 512}
+        if self.seed is not None:
+            options["seed"] = self.seed
         resp = ollama.chat(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.1, "num_predict": 512},
+            options=options,
         )
         text = resp["message"]["content"].strip()
 
@@ -337,58 +354,6 @@ class DocumentReviewer:
                   f"Raw LLM response:\n---\n{preview}\n---")
 
         return keep, translate_groups
-
-    @staticmethod
-    def _looks_like_abbreviation(s: str) -> bool:
-        """True if s looks like an abbreviation: short, with significant uppercase content."""
-        s = s.strip()
-        if not (2 <= len(s) <= 15):
-            return False
-        letters = [c for c in s if c.isalpha()]
-        if not letters:
-            return False
-        # Either majority uppercase, OR has a >=3-char all-uppercase token
-        # (catches hybrids like "Corte IDH" where IDH is the abbreviation part)
-        if sum(c.isupper() for c in letters) / len(letters) >= 0.5:
-            return True
-        return any(t.isupper() and len(t) >= 3 for t in s.split())
-
-    @staticmethod
-    def _could_be_abbreviation_of(abbrev: str, phrase: str) -> bool:
-        """True if `abbrev` could plausibly abbreviate `phrase`.
-
-        Walks through the abbreviation's whitespace-separated tokens and tries to match each one against the phrase's significant words
-        (skipping connectives like 'de', 'la', 'del'). A token either:
-        - Matches a phrase word verbatim (case-insensitive), or
-        - Is an uppercase abbreviation of the remaining phrase words
-
-        Handles hybrids like "Corte IDH"
-        """
-        skip = {"de", "del", "la", "las", "los", "el", "y", "para", "en", "por", "a", "of", "the", "and", "or", "for", "in", "on"}
-        abbrev_tokens = abbrev.split()
-        phrase_tokens = [w for w in phrase.split() if w.lower() not in skip]
-        if not abbrev_tokens or not phrase_tokens:
-            return False
-
-        phrase_i = 0
-        for at in abbrev_tokens:
-            if phrase_i >= len(phrase_tokens):
-                return False
-            # Case A: token is a word from the phrase (verbatim, case-insensitive)
-            if at.lower() == phrase_tokens[phrase_i].lower():
-                phrase_i += 1
-                continue
-            # Case B: uppercase abbreviation of the remaining phrase words
-            at_letters = "".join(c for c in at if c.isalpha()).upper()
-            if at_letters and at == at_letters:  # all-uppercase token
-                remaining = phrase_tokens[phrase_i:]
-                first_letters = "".join(w[0].upper() for w in remaining
-                                        if w and w[0].isalpha())
-                if at_letters == first_letters or at_letters in first_letters:
-                    phrase_i = len(phrase_tokens)
-                    continue
-            return False
-        return True
 
     @staticmethod
     def _looks_like_term_candidate(line: str) -> bool:
@@ -413,6 +378,44 @@ class DocumentReviewer:
         return True
 
     @staticmethod
+    def _clean_kt_content(content: str) -> list[str]:
+        """Clean a KEEP/TERM content string into a list of variant strings.
+
+        Handles four LLM output issues:
+        - Trailing or leading '|' (strip).
+        - '→ target' suffix that snuck in despite the "no translation" rule in Step 1a.
+        - 'X: Y' definition syntax (the LLM sometimes writes 'KEEP: X: Y'
+          to mean "X has the definition Y" — we treat as two variants).
+        - Within-group duplicates (case-insensitive dedup).
+        """
+        s = content.strip().strip("|").strip()
+        if not s:
+            return []
+        # Defensive: if the LLM still emitted a "→ target", drop the target —
+        # Step 1a is identification only. Step 1b handles translation.
+        if "→" in s:
+            s = s.split("→", 1)[0].strip().strip("|").strip()
+        if not s:
+            return []
+        # If there's no |, but there's a ": " in the middle, treat colon as variant separator. 
+        if "|" not in s and ": " in s:
+            s = s.replace(": ", " | ", 1)
+        raw_variants = [v.strip() for v in s.split("|") if v.strip()]
+        out: list[str] = []
+        seen_lower: set[str] = set()
+        # Drop reserved prompt prefix tokens
+        # if the LLM accidentally echoes them as variants (e.g. "KEEP: GLOBAL WITNESS: KEEP")
+        reserved = {"keep", "term", "translate", "prefer"}
+        for rv in raw_variants:
+            for sub in DocumentReviewer._split_parenthetical_variants(rv):
+                low = sub.lower()
+                if low in reserved or low in seen_lower:
+                    continue
+                out.append(sub)
+                seen_lower.add(low)
+        return out
+
+    @staticmethod
     def _parse_keep_term_lines(text: str) -> tuple[set[str], list[tuple[str, ...]]]:
         """Parse the raw KEEP/TERM/TRANSLATE lines, plus bare-line fallback."""
         keep: set[str] = set()
@@ -432,45 +435,23 @@ class DocumentReviewer:
             upper = line.upper()
             if upper.startswith("KEEP:"):
                 content = line.split(":", 1)[1].strip()
-                for variant in content.split("|"):
-                    v = variant.strip()
-                    if v:
-                        keep.add(v)
+                for variant in DocumentReviewer._clean_kt_content(content):
+                    keep.add(variant)
             elif upper.startswith("TERM:") or upper.startswith("TRANSLATE:"):
                 content = line.split(":", 1)[1].strip()
-                # Either | (explicit variant separator) or natural
-                # 'Full Name (Abbrev)' inline definition splits into variants
-                raw_variants = [v.strip() for v in content.split("|") if v.strip()]
-                variants: list[str] = []
-                for rv in raw_variants:
-                    for sub in DocumentReviewer._split_parenthetical_variants(rv):
-                        if sub not in variants:
-                            variants.append(sub)
+                variants = DocumentReviewer._clean_kt_content(content)
+                # Drop self-referential groups (e.g. "PDDH | PDDH")
                 if variants:
                     translate_groups.append(tuple(variants))
             elif DocumentReviewer._looks_like_term_candidate(line):
                 # Bare-line fallback: model ignored the KEEP:/TERM: format but emitted a string that looks like a term.
-                # Default to TERM (will be translated by Step 1b). Single-variant group.
-                for sub in DocumentReviewer._split_parenthetical_variants(line):
-                    if not already_known(sub.lower()):
-                        translate_groups.append((sub,))
+                # Route through _clean_kt_content so the same cleanups apply.
+                # All variants from one line are kept as a SINGLE multi-variant group.
+                variants = DocumentReviewer._clean_kt_content(line)
+                new = [v for v in variants if not already_known(v.lower())]
+                if new:
+                    translate_groups.append(tuple(new))
 
-        # Post-process: merge adjacent (phrase, abbreviation) bare-line pairs
-        # The LLM commonly emits an expansion immediately followed by its abbreviation on the next line
-        # Linking them as variants lets Step 1b translate only the (more informative) expansion
-        i = 0
-        while i < len(translate_groups) - 1:
-            g_curr = translate_groups[i]
-            g_next = translate_groups[i + 1]
-            if len(g_curr) == 1 and len(g_next) == 1:
-                phrase, candidate = g_curr[0], g_next[0]
-                if (len(phrase.split()) >= 2
-                        and DocumentReviewer._looks_like_abbreviation(candidate)
-                        and DocumentReviewer._could_be_abbreviation_of(candidate, phrase)):
-                    translate_groups[i] = (phrase, candidate)
-                    del translate_groups[i + 1]
-                    continue
-            i += 1
         return keep, translate_groups
 
     # ---- Step 1b (batched canonical translation) ----
@@ -508,10 +489,13 @@ class DocumentReviewer:
                 terms=terms_block,
             )
             try:
+                options = {"temperature": 0.1, "num_predict": 1024}
+                if self.seed is not None:
+                    options["seed"] = self.seed
                 resp = ollama.chat(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
-                    options={"temperature": 0.1, "num_predict": 1024},
+                    options=options,
                 )
             except Exception as e:
                 print(f"  [entity_extract] term-translation batch failed: {e}")
@@ -586,20 +570,82 @@ class DocumentReviewer:
     def _resolve_keep_translate_conflicts(
             keep_terms: set[str],
             groups: dict[str, list[str]],) -> tuple[set[str], dict[str, list[str]]]:
-        """Make KEEPs and TRANSLATE groups disjoint.
-
-        - If a KEEP's canonical matches a group canonical → group is removed (the KEEP wins; the canonical is verbatim, not translated).
-        - If a KEEP appears as a non-canonical variant in some TRANSLATE group → the KEEP is dropped (the group's translation wins).
+        """Make KEEPs and TRANSLATE groups disjoint. On conflict, the TRANSLATE group always wins.
+        Its variants stay, translation will be produced by Step 1b, and the conflicting KEEP is dropped.
+        The TRANSLATE group carries more information (it has the entity's variant set linked together), so we let it win and drop the redundant KEEP.
         """
-        for kt in list(keep_terms):
-            groups.pop(kt.lower(), None)
-
         variant_lowers = {v.lower() for variants in groups.values() for v in variants}
         absorbed = {kt for kt in keep_terms if kt.lower() in variant_lowers}
         if absorbed:
             keep_terms -= absorbed
             print(f"  [entity_extract] absorbed {len(absorbed)} KEEP(s) into existing TRANSLATE groups: {sorted(absorbed)}")
         return keep_terms, groups
+
+    @staticmethod
+    def _consolidate_groups_by_shared_variants(
+            groups: dict[str, list[str]],) -> dict[str, list[str]]:
+        """Merge groups whose variant sets overlap (case-insensitive).
+
+        Across many segments, the LLM emits the same entity with different canonical-first variants
+        (e.g. "Corte Interamericana de Derechos Humanos | Corte IDH" in one segment, "Corte IDH | Corte" in another, "CORTES INTERAMERICANAS..." in a heading-derived segment)
+        Each distinct first-variant-lowercased becomes its own dict key, so the cross-segment merger doesn't unify them.
+
+        This pass walks the groups and union-merges any two whose variant lists share at least one element (case-insensitive).
+        The merged group's canonical is the LONGEST variant (most context for Step 1b).
+        """
+        # Build canonical → group items list
+        items = list(groups.items())  # list of (canonical_key, variants)
+        # Union-find by index
+        parent = list(range(len(items)))
+
+        def find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(i: int, j: int) -> None:
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[ri] = rj
+
+        # Map each variant (lowercased) to all group indices that contain it.
+        variant_to_groups: dict[str, list[int]] = {}
+        for i, (_key, variants) in enumerate(items):
+            for v in variants:
+                variant_to_groups.setdefault(v.lower(), []).append(i)
+        # For any variant that appears in multiple groups, union those groups.
+        for indices in variant_to_groups.values():
+            if len(indices) > 1:
+                base = indices[0]
+                for idx in indices[1:]:
+                    union(base, idx)
+
+        # Collect merged groups by root.
+        merged: dict[int, list[str]] = {}
+        for i, (_key, variants) in enumerate(items):
+            root = find(i)
+            target = merged.setdefault(root, [])
+            seen = {v.lower() for v in target}
+            for v in variants:
+                if v.lower() not in seen:
+                    target.append(v)
+                    seen.add(v.lower())
+
+        # For each merged set, pick the longest variant as the new canonical
+        # (it has the most context for Step 1b) and rebuild the dict keyed by that canonical lowercased.
+        out: dict[str, list[str]] = {}
+        for variants in merged.values():
+            # Sort by length descending, but preserve order otherwise
+            canonical = max(variants, key=len)
+            # Put canonical first, the rest in their original order
+            ordered = [canonical] + [v for v in variants if v != canonical]
+            out[canonical.lower()] = ordered
+
+        if len(out) < len(items):
+            print(f"  [entity_extract] consolidated {len(items)} groups "
+                  f"into {len(out)} by shared variants")
+        return out
 
     @staticmethod
     def _build_entries(keep_terms: set[str],
@@ -620,18 +666,25 @@ class DocumentReviewer:
             entries.append(GlossaryEntry([term], term, kind="verbatim"))
 
         demoted = 0
+        dropped_to_prefer = 0
         for canonical_key, variants in groups.items():
             canonical = variants[0]
             if canonical_key in seen:
                 continue
             seen.add(canonical_key)
             target = translations.get(canonical)
-            if not target or target.lower() == canonical.lower():
-                # Step 1b returned nothing or identity → keep all variants verbatim
+            if target and target.lower() != canonical.lower():
+                entries.append(GlossaryEntry(list(variants), target, kind="require"))
+            elif target and target.lower() == canonical.lower():
+                # Identity translation - the term doesn't change between languages (proper noun, acronym kept verbatim)
                 entries.append(GlossaryEntry(list(variants), canonical, kind="verbatim"))
                 demoted += 1
             else:
-                entries.append(GlossaryEntry(list(variants), target, kind="require"))
+                entries.append(GlossaryEntry(list(variants), canonical, kind="prefer"))
+                dropped_to_prefer += 1
+        if dropped_to_prefer:
+            print(f"  [entity_extract] {dropped_to_prefer} term(s) untranslated by step 1b "
+                  f"— marked as PREFER (soft guidance, no enforcement)")
         return entries, demoted
 
     # ---- review() orchestrator ----
@@ -647,6 +700,8 @@ class DocumentReviewer:
         keep_terms, groups = self._identify_terms_in_segments(segments)
         keep_terms, groups = self._reclassify_misclassified_keeps(keep_terms, groups)
         keep_terms, groups = self._resolve_keep_translate_conflicts(keep_terms, groups)
+        # Collapse duplicate entities the cross-segment merge missed (e.g. same entity emitted with different canonical-first variants per segment).
+        groups = self._consolidate_groups_by_shared_variants(groups)
 
         print(f"  [entity_extract] identification complete: {len(keep_terms)} KEEP, {len(groups)} TERM group(s)")
         self._snap.step1_merged(keep_terms, groups)
