@@ -138,6 +138,19 @@ class DocumentReviewer:
         return (full, abbrev)
 
     @staticmethod
+    def _natural_case(s: str) -> str:
+        """Lowercase ALL-CAPS multi-word phrases; leave acronyms and proper-case alone.
+
+        Glossary entries built from headings often end up in all caps.
+        This normalizes only the caps case.
+        """
+        words = s.split()
+        alpha_words = [w for w in words if any(c.isalpha() for c in w)]
+        if len(alpha_words) >= 2 and all(w == w.upper() for w in alpha_words):
+            return s.lower()
+        return s
+
+    @staticmethod
     def _looks_like_real_keep(term: str) -> bool:
         """Heuristic: would this term plausibly appear unchanged in target-lang text?
 
@@ -758,6 +771,9 @@ class DocumentReviewer:
         keep_terms, groups = self._resolve_keep_translate_conflicts(keep_terms, groups)
         # Collapse duplicate entities the cross-segment merge missed (e.g. same entity emitted with different canonical-first variants per segment).
         groups = self._consolidate_groups_by_shared_variants(groups, variant_support)
+        # Normalize ALL-CAPS variants picked up from headings so Step 1b produces natural-case translations and Phase 2 isn't forced into caps.
+        groups = {k: [self._natural_case(v) for v in variants]
+                  for k, variants in groups.items()}
 
         print(f"  [entity_extract] identification complete: {len(keep_terms)} KEEP, {len(groups)} TERM group(s)")
         self._snap.step1_merged(keep_terms, groups)
@@ -768,6 +784,8 @@ class DocumentReviewer:
             # Concatenate all segments so Step 1b can find context for each term
             full_source_text = "\n".join(segments)
             translations = self._translate_terms(canonicals, source_text=full_source_text)
+            # Defensive: normalize any all caps targets the LLM might have echoed back in caps.
+            translations = {k: self._natural_case(v) for k, v in translations.items()}
         else:
             translations = {}
 
