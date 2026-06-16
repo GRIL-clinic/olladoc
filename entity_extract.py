@@ -355,6 +355,13 @@ class DocumentReviewer:
 
         return keep, translate_groups
 
+    # Common abbreviations whose trailing "." is NOT a sentence boundary.
+    # Stripped before the "intra-sentence period" prose check so legal citations like "Cajar vs. Colombia" survive.
+    _SAFE_ABBREV_RE = re.compile(
+        r'\b(?:vs|v|cf|etc|i\.e|e\.g|Sr|Sra|Sres|Sras|Dr|Dra|Mr|Mrs|Ms|No|Art|Inc|Ltd|St)\.',
+        re.IGNORECASE,
+    )
+
     @staticmethod
     def _looks_like_term_candidate(line: str) -> bool:
         """Heuristic: does this bare (no-prefix) line look like a term?
@@ -363,13 +370,15 @@ class DocumentReviewer:
         Conservative: only accepts lines that look like proper nouns, abbreviations, named entities, or identifiers
         """
         s = line.strip()
-        if not s or len(s) < 2 or len(s) > 100:
+        if not s or len(s) < 2:
             return False
         # Sentence-ending punctuation suggests prose, not a term
         if s.endswith(("?", "!", ".")):
             return False
-        # A ". " in the middle suggests multi-sentence prose
-        if ". " in s:
+        # A ". " in the middle suggests multi-sentence prose 
+        # But strip common abbreviations first so "Cajar vs. Colombia" doesn't trigger it
+        s_check = DocumentReviewer._SAFE_ABBREV_RE.sub('', s)
+        if ". " in s_check:
             return False
         # Must have SOMETHING distinguishing it from random lowercase words —
         # a capital letter (proper noun), underscore (code identifier), or internal period (URL-like).
@@ -522,13 +531,17 @@ class DocumentReviewer:
     # ---- review() helpers ----
 
     def _identify_terms_in_segments(self, segments: list[str]
-                        ) -> tuple[set[str], dict[str, list[str]]]:
+                        ) -> tuple[set[str], dict[str, list[str]], dict[tuple[str, str], int]]:
         """Run Step 1a per segment and union the results.
 
-        Returns (keep_terms, group_by_canonical), where group_by_canonical maps lowercased-canonical → list of source variants for that entity.
+        Returns (keep_terms, group_by_canonical, variant_support), where:
+        - group_by_canonical maps lowercased-canonical → list of source variants for that entity.
+        - variant_support maps (canonical_lower, variant_lower) → number of segments that paired them.
+          Used by the consolidator to detect LLM grouping errors when one segment places a variant under a different canonical than the majority do.
         """
         keep_terms: set[str] = set()
         group_by_canonical: dict[str, list[str]] = {}
+        variant_support: dict[tuple[str, str], int] = {}
         for i, segment in enumerate(segments):
             try:
                 k, segment_groups = self._identify_segment(segment, segment_index=i)
@@ -541,10 +554,12 @@ class DocumentReviewer:
                 existing = group_by_canonical.setdefault(canonical_key, [])
                 seen_variants = {v.lower() for v in existing}
                 for v in variants:
+                    variant_support[(canonical_key, v.lower())] = \
+                        variant_support.get((canonical_key, v.lower()), 0) + 1
                     if v.lower() not in seen_variants:
                         existing.append(v)
                         seen_variants.add(v.lower())
-        return keep_terms, group_by_canonical
+        return keep_terms, group_by_canonical, variant_support
 
     @staticmethod
     def _reclassify_misclassified_keeps(
@@ -583,7 +598,9 @@ class DocumentReviewer:
 
     @staticmethod
     def _consolidate_groups_by_shared_variants(
-            groups: dict[str, list[str]],) -> dict[str, list[str]]:
+            groups: dict[str, list[str]],
+            variant_support: dict[tuple[str, str], int] | None = None,
+            ) -> dict[str, list[str]]:
         """Merge groups whose variant sets overlap (case-insensitive).
 
         Across many segments, the LLM emits the same entity with different canonical-first variants
@@ -592,6 +609,12 @@ class DocumentReviewer:
 
         This pass walks the groups and union-merges any two whose variant lists share at least one element (case-insensitive).
         The merged group's canonical is the LONGEST variant (most context for Step 1b).
+
+        Cross-segment voting (when variant_support is supplied):
+        Before unioning, check per-segment support for each shared variant.
+        If one group has only 1 segment of support and another has >=3 segments, the singleton is treated as an LLM grouping error: 
+        drop the variant from the minority group and don't union via it.
+        Example: 5 segments grouped CIDH with Comisión but 1 segment grouped it with Corte. Voting keeps CIDH with Comisión and drops it from Corte.
         """
         # Build canonical → group items list
         items = list(groups.items())  # list of (canonical_key, variants)
@@ -614,28 +637,61 @@ class DocumentReviewer:
         for i, (_key, variants) in enumerate(items):
             for v in variants:
                 variant_to_groups.setdefault(v.lower(), []).append(i)
-        # For any variant that appears in multiple groups, union those groups.
+
+        # Cross-segment voting: drop singleton variant assignments that contradict a >=3-segment majority.
+        # Conservative threshold - we only overrule a grouping when the alternative has strong consensus.
+        dropped: dict[int, set[str]] = {}  # group_idx -> variant_lowers to drop
+        if variant_support is not None:
+            for v_lower, indices in variant_to_groups.items():
+                unique_groups = set(indices)
+                if len(unique_groups) < 2:
+                    continue
+                supports = {idx: variant_support.get((items[idx][0], v_lower), 0)
+                            for idx in unique_groups}
+                max_support = max(supports.values())
+                if max_support < 3:
+                    continue
+                for idx, count in supports.items():
+                    if count == 1 and count < max_support:
+                        dropped.setdefault(idx, set()).add(v_lower)
+            if dropped:
+                total = sum(len(s) for s in dropped.values())
+                print(f"  [entity_extract] cross-segment voting dropped {total} singleton variant assignment(s) contradicting >=3-segment majority")
+                # Rebuild variant_to_groups without the dropped (idx, variant) pairs
+                new_v2g: dict[str, list[int]] = {}
+                for v_lower, indices in variant_to_groups.items():
+                    kept = [i for i in indices if v_lower not in dropped.get(i, set())]
+                    if kept:
+                        new_v2g[v_lower] = kept
+                variant_to_groups = new_v2g
+
+        # For any variant that still appears in multiple groups, union those groups.
         for indices in variant_to_groups.values():
-            if len(indices) > 1:
+            if len(set(indices)) > 1:
                 base = indices[0]
                 for idx in indices[1:]:
                     union(base, idx)
 
-        # Collect merged groups by root.
+        # Collect merged groups by root, skipping variants dropped by voting.
         merged: dict[int, list[str]] = {}
         for i, (_key, variants) in enumerate(items):
             root = find(i)
             target = merged.setdefault(root, [])
             seen = {v.lower() for v in target}
             for v in variants:
+                if v.lower() in dropped.get(i, set()):
+                    continue
                 if v.lower() not in seen:
                     target.append(v)
                     seen.add(v.lower())
 
         # For each merged set, pick the longest variant as the new canonical
         # (it has the most context for Step 1b) and rebuild the dict keyed by that canonical lowercased.
+        # Skip empty merged groups (every variant was dropped by voting).
         out: dict[str, list[str]] = {}
         for variants in merged.values():
+            if not variants:
+                continue
             # Sort by length descending, but preserve order otherwise
             canonical = max(variants, key=len)
             # Put canonical first, the rest in their original order
@@ -697,11 +753,11 @@ class DocumentReviewer:
 
         print(f"  [entity_extract] identifying terms in {len(segments)} segment(s) ...")
 
-        keep_terms, groups = self._identify_terms_in_segments(segments)
+        keep_terms, groups, variant_support = self._identify_terms_in_segments(segments)
         keep_terms, groups = self._reclassify_misclassified_keeps(keep_terms, groups)
         keep_terms, groups = self._resolve_keep_translate_conflicts(keep_terms, groups)
         # Collapse duplicate entities the cross-segment merge missed (e.g. same entity emitted with different canonical-first variants per segment).
-        groups = self._consolidate_groups_by_shared_variants(groups)
+        groups = self._consolidate_groups_by_shared_variants(groups, variant_support)
 
         print(f"  [entity_extract] identification complete: {len(keep_terms)} KEEP, {len(groups)} TERM group(s)")
         self._snap.step1_merged(keep_terms, groups)

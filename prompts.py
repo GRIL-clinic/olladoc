@@ -52,7 +52,9 @@ For each term found, output exactly ONE line:
   KEEP: <term>
 
 - TERM = needs a consistent {target_lang} translation in the final document
-- KEEP = preserve verbatim in the {target_lang} output (personal names, brand names, code identifiers, URLs)
+- KEEP = preserve verbatim in the {target_lang} output (personal names, brand names, code identifiers, URLs, LEGAL CASE NAMES)
+- LEGAL CASE NAMES (anything formatted as "Caso X", "X vs. Y", "X v. Y", "Caso X vs. Y") ALWAYS go in KEEP, never TERM.
+  Example: "Caso CAJAR vs. Colombia" → KEEP: Caso CAJAR vs. Colombia (do NOT translate)
 - One term per line. No explanation. If nothing applies, output nothing.
 - Skip common words and unspecialized vocabulary.
 
