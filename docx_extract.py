@@ -1,8 +1,9 @@
 """
 Docx extractor
 --------------
-Walks a .docx and produces a list of Blocks (Heading, BodyPara,
-ListItem, TablePlaceholder, Footnote, Comment) plus the raw table data.
+Walks a .docx and produces a list of Blocks 
+(Heading, BodyPara, ListItem, TablePlaceholder, Footnote, Comment)
+plus the raw table data.
 """
 
 import re
@@ -40,9 +41,8 @@ class DocxExtractor:
         self._heading_numbers = self._extract_heading_numbers()
 
     def _extract_heading_numbers(self) -> dict[str, str]:
-        """Use LibreOffice to render the docx to plain text and extract
-        heading numbers. Returns a map of heading text → number prefix
-        (e.g. 'Componentes de la base' → '1.')."""
+        """Use LibreOffice to render the docx to plain text and extract heading numbers.
+        Returns a map of heading text → number prefix (e.g. 'Componentes de la base' → '1.')."""
         heading_map: dict[str, str] = {}
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -75,14 +75,12 @@ class DocxExtractor:
         return heading_map
 
     def _lookup_heading_number(self, heading_text: str) -> str:
-        """Look up the rendered number for a heading by matching its text
-        against the LibreOffice-extracted map."""
+        """Look up the rendered number for a heading by matching its text against the LibreOffice-extracted map."""
         key = heading_text[:40].strip()
         return self._heading_numbers.get(key, "")
 
     def _parse_numbering(self) -> dict:
-        """Parse numbering.xml to build a map of
-        (numId, ilvl) → {fmt, lvlText, start}."""
+        """Parse numbering.xml to build a map of (numId, ilvl) → {fmt, lvlText, start}."""
         defs = {}
         numbering_part = None
         for rel in self.doc.part.rels.values():
@@ -128,9 +126,8 @@ class DocxExtractor:
         return defs
 
     def _resolve_numbering(self, para) -> str:
-        """If a paragraph has w:numPr, resolve and return its display
-        number (e.g. '1.' or '1.2.'). Handles multi-level numbering
-        with sub-level counter resets."""
+        """If a paragraph has w:numPr, resolve and return its display number (e.g. '1.' or '1.2.'). 
+        Handles multi-level numbering with sub-level counter resets."""
         W = self._W
         ppr = para._p.find(f"{{{W}}}pPr")
         if ppr is None:
@@ -161,8 +158,7 @@ class DocxExtractor:
                 sub_def = self._num_defs.get(sub_key, {})
                 self._num_counters[sub_key] = sub_def.get("start", 1) - 1
 
-        # Build display text: replace %1, %2, %3... with counters
-        # from each level.
+        # Build display text: replace %1, %2, %3... with counters from each level.
         result = lvl_def["lvlText"]
         for lvl_idx in range(ilvl + 1):
             lvl_key = (numId, str(lvl_idx))
@@ -196,11 +192,9 @@ class DocxExtractor:
         return _LIST_MARKER_RE.match(para.text or "") is not None
 
     def _para_runs(self, para) -> List[Run]:
-        """Convert a paragraph's runs into Run model. Footnote
-        references (inline superscripts with no <w:t>) are emitted as
-        sentinel markers of the form ``‹FN{id}›`` so they survive
-        translation and can be re-rendered as superscript runs by the
-        translator's docx writer."""
+        """Convert a paragraph's runs into Run model.
+        Footnote references (inline superscripts with no <w:t>) are emitted as sentinel markers of the form ``‹FN{id}›`` 
+        so they survive translation and can be re-rendered as superscript runs by the translator's docx writer."""
         out: List[Run] = []
         fn_tag = f"{{{self._W}}}footnoteReference"
         for r in para.runs:
@@ -293,8 +287,7 @@ class DocxExtractor:
         return "".join(texts).strip()
 
     def _extract_comments(self) -> List[Comment]:
-        """Pull review comments from docx comments, ordered by
-        their anchor position in the body."""
+        """Pull review comments from docx comments, ordered by their anchor position in the body."""
         comments_part = None
         for rel in self.doc.part.rels.values():
             if rel.reltype.endswith("/comments"):
@@ -402,8 +395,8 @@ class DocxExtractor:
                     blocks.append(ListItem(
                         title=title_text, body_runs=runs, separator=" "))
                     continue
-                # Auto-numbered List Paragraph (numbering rendered by
-                # Word): try to resolve the number prefix and prepend it.
+                # Auto-numbered List Paragraph (numbering rendered by Word): 
+                # try to resolve the number prefix and prepend it.
                 num_prefix = self._lookup_heading_number(
                     "".join(r.text for r in runs))
                 if num_prefix:
@@ -413,9 +406,8 @@ class DocxExtractor:
                         italic=runs[0].italic,
                         size=runs[0].size,
                     )
-                    # If the paragraph is all-bold + auto-numbered, it's
-                    # visually a heading. Promote it so the renderer
-                    # treats it as one. Depth of the number dictates level.
+                    # If the paragraph is all-bold + auto-numbered, it's visually a heading.
+                    # Promote it so the renderer treats it as one. Depth of the number dictates level.
                     all_bold = all(r.bold for r in runs if r.stripped_len)
                     if all_bold:
                         depth = num_prefix.count(".")
@@ -425,9 +417,9 @@ class DocxExtractor:
 
             blocks.append(BodyPara(runs=runs))
 
-        # Footnotes and comments are appended after body blocks; the
-        # translator routes them to their own output files, so
-        # their position in the list is incidental.
+        # Footnotes and comments are appended after body blocks; 
+        # the translator routes them to their own output files, 
+        # so their position in the list is incidental.
         blocks.extend(footnotes)
         blocks.extend(self._extract_comments())
 

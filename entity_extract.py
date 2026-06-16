@@ -1,0 +1,744 @@
+"""
+Document terminology review:
+builds a translation glossary from the source document before translation.
+
+Flow:
+  1. Split the full document text into segments.
+  2. Step 1a — per segment, ask the LLM to identify {source_lang} terms (KEEP / TERM classification).
+  Multiple source forms of the same entity (full name + abbreviation + short reference) are grouped onto one line as variants.
+  3. Merge groups across segments by canonical (first variant, lowercased).
+  4. Step 1b — one batched LLM call translates every canonical TERM to {target_lang}. All variants in the group share that one target.
+  Identity translations are demoted to KEEP so they don't trigger spurious 'require' violations later.
+  5. Supplement with fast symbolic passes (snake_case identifiers, URLs).
+  6. Append any user-supplied glossary at the end, with user entries winning on collision.
+  7. Return a DomainGlossary the Translator uses for every chunk.
+"""
+
+import json
+import ollama
+import re
+
+from pathlib import Path
+
+from blocks import Block, Heading, BodyPara, ListItem, Footnote, Comment
+from glossary import DomainGlossary, GlossaryEntry
+from prompts import IDENTIFY_PROMPT, TRANSLATE_TERMS_PROMPT
+
+
+# ---- Snapshot writer (offline debug artifacts) -----------------------------
+
+class _SnapshotWriter:
+    """Persists Phase 1 intermediate artifacts to disk for offline debugging.
+
+    Captures both Step 1a (per-segment identification) and Step 1b (batched canonical translation) inputs, prompts, raw LLM responses, parsed results, and the merged state. 
+    Disabled (no-op) when dump_dir is None.
+    """
+
+    def __init__(self, dump_dir: str | Path | None):
+        self.dump_dir = Path(dump_dir) if dump_dir else None
+        if self.dump_dir:
+            self.dump_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def enabled(self) -> bool:
+        return self.dump_dir is not None
+
+    def _write_text(self, name: str, content: str) -> None:
+        if self.enabled:
+            (self.dump_dir / name).write_text(content, encoding="utf-8")
+
+    def _write_json(self, name: str, obj) -> None:
+        if self.enabled:
+            (self.dump_dir / name).write_text(
+                json.dumps(obj, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+    def step1a_segment(self, segment_index: int, segment: str, prompt: str,
+                       raw_response: str, keep: set[str],
+                       translate_groups: list[tuple[str, ...]]) -> None:
+        if not self.enabled:
+            return
+        tag = f"segment_{segment_index:03d}"
+        self._write_text(f"{tag}_input.txt", segment)
+        self._write_text(f"{tag}_step1a_prompt.txt", prompt)
+        self._write_text(f"{tag}_step1a_raw.txt", raw_response)
+        self._write_json(f"{tag}_step1a_parsed.json", {
+            "keep": sorted(keep),
+            "translate_groups": [list(g) for g in translate_groups],
+        })
+
+    def step1b_input(self, terms: list[str]) -> None:
+        self._write_json("step1b_input.json", terms)
+
+    def step1b_batch(self, batch_idx: int, prompt: str, raw_response: str) -> None:
+        if not self.enabled:
+            return
+        tag = f"step1b_batch_{batch_idx:02d}"
+        self._write_text(f"{tag}_prompt.txt", prompt)
+        self._write_text(f"{tag}_raw.txt", raw_response)
+
+    def step1b_result(self, translations: dict[str, str]) -> None:
+        self._write_json("step1b_parsed.json", translations)
+
+    def step1_merged(self, keep_terms: set[str],
+                     groups: dict[str, list[str]]) -> None:
+        self._write_json("step1_merged.json", {
+            "keep_terms": sorted(keep_terms),
+            "groups": dict(groups),
+        })
+
+    def review_entries(self, entries: list[GlossaryEntry]) -> None:
+        self._write_json("review_entries.json", [
+            {"source_terms": e.source_terms, "target": e.target,
+             "target_alts": e.target_alts, "kind": e.kind, "note": e.note}
+            for e in entries
+        ])
+
+
+# ---- DocumentReviewer ------------------------------------------------------
+
+class DocumentReviewer:
+    """Reviews a document for specialized terminology before translation.
+
+    Splits the full document into segments, sends each to the LLM asking it to identify {source_lang} terms,
+    then batches one LLM call to translate the canonical of each TERM group to {target_lang}.
+    Variant source forms of the same entity are merged across segments and share one target translation.
+    """
+
+    # ---- Regex constants ----
+
+    # Matches snake_case identifiers: two or more lowercase/digit words joined by underscores.
+    _VAR_RE = re.compile(r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b')
+    # Matches URLs and common domain-suffix bare hostnames.
+    _URL_RE = re.compile(r'https?://\S+|\b\w+\.(org|eu|int|un|gov|net)\b')
+    # Trailing parenthetical the LLM emits as part of a source term — the common
+    # "Full Name (Abbrev)" definition pattern. Captures (full, abbrev) so the
+    # parser can record them as variants of the same entity.
+    _TRAILING_PAREN_RE = re.compile(r'^(.+?)\s*\(([^()]{1,40})\)\s*$')
+    # Matches Step 1b output lines of the form "source term → target term".
+    _TERM_LINE_RE = re.compile(r'^\s*(.+?)\s*→\s*(.+?)\s*$')
+
+    # ---- Static helpers (pure functions used by the class methods below) ----
+
+    @staticmethod
+    def _split_parenthetical_variants(term: str) -> tuple[str, ...]:
+        """Split 'Full Name (Abbrev)' into ('Full Name', 'Abbrev').
+
+        Returns a one-element tuple if no trailing parenthetical, otherwise both forms as variants. 
+        Pure parser cleanup of LLM output — no semantic extraction from source text.
+        """
+        m = DocumentReviewer._TRAILING_PAREN_RE.match(term.strip())
+        if not m:
+            return (term.strip(),)
+        full = m.group(1).strip()
+        abbrev = m.group(2).strip()
+        if not full or not abbrev:
+            return (term.strip(),)
+        return (full, abbrev)
+
+    @staticmethod
+    def _looks_like_real_keep(term: str) -> bool:
+        """Heuristic: would this term plausibly appear unchanged in target-lang text?
+
+        Used to catch LLM misclassifications where common phrases like 'medios de comunicación' end up in KEEP. 
+        Conservative — only filters out things that are clearly ordinary source-language phrases.
+        """
+        t = term.strip()
+        if not t:
+            return False
+        # URLs, domains, paths — definitely keep
+        if "/" in t or "://" in t or DocumentReviewer._URL_RE.search(t):
+            return True
+        # Code identifiers
+        if "_" in t or any(c.isdigit() for c in t):
+            return True
+        # All-uppercase abbreviations (e.g. "URL", "PDF")
+        if t.replace(".", "").isupper() and len(t) <= 6:
+            return True
+        words = t.split()
+        # Single capitalized word — probably a proper name
+        if len(words) == 1 and words[0][0].isupper():
+            return True
+        # Multi-word phrase: at least one word must start uppercase
+        # (proper noun phrase like "Inter-American Court")
+        if any(w[0].isupper() for w in words):
+            return True
+        # Otherwise: all-lowercase multi-word phrase — likely an ordinary
+        # source-language phrase the LLM wrongly classified
+        return False
+
+    @staticmethod
+    def _all_text_blocks(blocks: list[Block]) -> list[str]:
+        """Flatten a Block list into a list of textual strings."""
+        parts = []
+        for b in blocks:
+            if isinstance(b, Heading):
+                parts.append(b.text)
+            elif isinstance(b, BodyPara):
+                parts.append(b.text)
+            elif isinstance(b, ListItem):
+                parts.append(b.title + " " + b.body_text)
+            elif isinstance(b, (Footnote, Comment)):
+                parts.append(b.text)
+        return parts
+
+    @staticmethod
+    def _symbolic_entries(blocks: list[Block]) -> list[GlossaryEntry]:
+        """Extract snake_case variables and URLs as verbatim entries."""
+        full = "\n".join(DocumentReviewer._all_text_blocks(blocks))
+        seen: set[str] = set()
+        entries = []
+        for m in DocumentReviewer._VAR_RE.finditer(full):
+            var = m.group(1)
+            if var not in seen:
+                seen.add(var)
+                entries.append(GlossaryEntry([var], var, kind="verbatim"))
+        for m in DocumentReviewer._URL_RE.finditer(full):
+            term = m.group(0)
+            if term not in seen:
+                seen.add(term)
+                entries.append(GlossaryEntry([term], term, kind="verbatim"))
+        return entries
+
+    @staticmethod
+    def _find_context_for_term(term: str, source_text: str,
+                               max_chars: int = 200) -> str | None:
+        """Find `term` in `source_text` and return surrounding context.
+
+        Returns up to `max_chars` characters of the source containing the first case-insensitive occurrence of the term, trimmed to sentence boundaries where possible. 
+        Returns None if the term isn't found.
+
+        Used by Step 1b to ground abbreviation translations in the document's actual usage.
+        """
+        if not term or not source_text:
+            return None
+        lower_source = source_text.lower()
+        lower_term = term.lower()
+        idx = lower_source.find(lower_term)
+        if idx == -1:
+            return None
+
+        # Trim back to a sentence start (or paragraph boundary). 
+        # Fall back to a word boundary so we don't start the context mid-word.
+        half = max_chars // 2
+        start = max(0, idx - half)
+        found_boundary = False
+        for boundary in (". ", "! ", "? ", "\n"):
+            pos = source_text.rfind(boundary, start, idx)
+            if pos != -1:
+                start = pos + len(boundary)
+                found_boundary = True
+                break
+        if not found_boundary and start > 0:
+            # Move forward to the FIRST space (preserve max context; just avoid starting mid-word).
+            pos = source_text.find(" ", start, idx)
+            if pos != -1:
+                start = pos + 1
+
+        # Trim forward to a sentence end (with same word-boundary fallback)
+        end = min(len(source_text), idx + len(term) + half)
+        found_boundary = False
+        for boundary in (". ", "! ", "? ", "\n"):
+            pos = source_text.find(boundary, idx + len(term), end)
+            if pos != -1:
+                end = pos + 1
+                found_boundary = True
+                break
+        if not found_boundary and end < len(source_text):
+            pos = source_text.rfind(" ", idx + len(term), end)
+            if pos != -1:
+                end = pos
+
+        context = source_text[start:end].strip().replace("\n", " ")
+        if len(context) > max_chars:
+            context = context[:max_chars - 3] + "..."
+        # Quotes inside context would confuse the prompt format
+        # replace double-quotes with single quotes since we wrap in double-quotes
+        return context.replace('"', "'")
+
+
+    def __init__(self, model: str, source_lang: str, target_lang: str,
+                 segment_chars: int = 6_000,
+                 term_batch_size: int = 40,
+                 dump_dir: str | Path | None = None):
+        self.model = model
+        self.source_lang = source_lang
+        self.target_lang = target_lang
+        # Step 1a sends this many chars per LLM call (one call per segment).
+        self.segment_chars = segment_chars
+        # Step 1b sends this many TERM canonicals per LLM call.
+        self.term_batch_size = term_batch_size
+        # When dump_dir is set, intermediate artifacts are written to disk for offline debugging.
+        # See _SnapshotWriter for the layout.
+        self._snap = _SnapshotWriter(dump_dir)
+
+    @property
+    def dump_dir(self) -> Path | None:
+        """Read-only view of where snapshots are being written (or None)."""
+        return self._snap.dump_dir
+
+    # ---- segmentation ----
+
+    def _segment_text(self, blocks: list[Block]) -> list[str]:
+        """Split document text into segments, breaking on paragraph boundaries."""
+        parts = [p for p in self._all_text_blocks(blocks) if p.strip()]
+        segments: list[str] = []
+        current: list[str] = []
+        current_len = 0
+        for part in parts:
+            if current and current_len + len(part) + 1 > self.segment_chars:
+                segments.append("\n".join(current))
+                current = []
+                current_len = 0
+            current.append(part)
+            current_len += len(part) + 1
+        if current:
+            segments.append("\n".join(current))
+        return segments
+
+    # ---- Step 1a (per-segment identification) ----
+
+    def _identify_segment(self, segment: str,
+                          segment_index: int | None = None
+                          ) -> tuple[set[str], list[tuple[str, ...]]]:
+        """Ask the LLM to list source-language terms in this segment.
+
+        Returns (keep_terms, translate_groups):
+        - keep_terms: flat set of source-language strings to preserve verbatim.
+        - translate_groups: list of variant tuples. 
+          Each tuple groups multiple source forms that refer to the same entity (canonical form first);
+          they will share one target translation in the final glossary.
+        """
+        prompt = IDENTIFY_PROMPT.format(
+            source_lang=self.source_lang,
+            target_lang=self.target_lang,
+            text=segment,
+        )
+        resp = ollama.chat(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.1, "num_predict": 512},
+        )
+        text = resp["message"]["content"].strip()
+
+        keep, translate_groups = self._parse_keep_term_lines(text)
+
+        if segment_index is not None:
+            self._snap.step1a_segment(segment_index, segment, prompt, text,
+                                      keep, translate_groups)
+
+        # If we parsed nothing, surface what the LLM actually returned so the user can diagnose prompt issues.
+        # Pure-identification prompts can fail on translation-tuned models like translategemma.
+        # We need to use a general-purpose review_model if this fires often.
+        if not keep and not translate_groups:
+            preview = text if len(text) <= 400 else text[:400] + "...[truncated]"
+            print(f"  [entity_extract] WARN: segment produced 0 parsed terms. "
+                  f"Raw LLM response:\n---\n{preview}\n---")
+
+        return keep, translate_groups
+
+    @staticmethod
+    def _looks_like_abbreviation(s: str) -> bool:
+        """True if s looks like an abbreviation: short, with significant uppercase content."""
+        s = s.strip()
+        if not (2 <= len(s) <= 15):
+            return False
+        letters = [c for c in s if c.isalpha()]
+        if not letters:
+            return False
+        # Either majority uppercase, OR has a >=3-char all-uppercase token
+        # (catches hybrids like "Corte IDH" where IDH is the abbreviation part)
+        if sum(c.isupper() for c in letters) / len(letters) >= 0.5:
+            return True
+        return any(t.isupper() and len(t) >= 3 for t in s.split())
+
+    @staticmethod
+    def _could_be_abbreviation_of(abbrev: str, phrase: str) -> bool:
+        """True if `abbrev` could plausibly abbreviate `phrase`.
+
+        Walks through the abbreviation's whitespace-separated tokens and tries to match each one against the phrase's significant words
+        (skipping connectives like 'de', 'la', 'del'). A token either:
+        - Matches a phrase word verbatim (case-insensitive), or
+        - Is an uppercase abbreviation of the remaining phrase words
+
+        Handles hybrids like "Corte IDH"
+        """
+        skip = {"de", "del", "la", "las", "los", "el", "y", "para", "en", "por", "a", "of", "the", "and", "or", "for", "in", "on"}
+        abbrev_tokens = abbrev.split()
+        phrase_tokens = [w for w in phrase.split() if w.lower() not in skip]
+        if not abbrev_tokens or not phrase_tokens:
+            return False
+
+        phrase_i = 0
+        for at in abbrev_tokens:
+            if phrase_i >= len(phrase_tokens):
+                return False
+            # Case A: token is a word from the phrase (verbatim, case-insensitive)
+            if at.lower() == phrase_tokens[phrase_i].lower():
+                phrase_i += 1
+                continue
+            # Case B: uppercase abbreviation of the remaining phrase words
+            at_letters = "".join(c for c in at if c.isalpha()).upper()
+            if at_letters and at == at_letters:  # all-uppercase token
+                remaining = phrase_tokens[phrase_i:]
+                first_letters = "".join(w[0].upper() for w in remaining
+                                        if w and w[0].isalpha())
+                if at_letters == first_letters or at_letters in first_letters:
+                    phrase_i = len(phrase_tokens)
+                    continue
+            return False
+        return True
+
+    @staticmethod
+    def _looks_like_term_candidate(line: str) -> bool:
+        """Heuristic: does this bare (no-prefix) line look like a term?
+
+        Used as a fallback when the LLM emits terms without the KEEP:/TERM: prefix
+        Conservative: only accepts lines that look like proper nouns, abbreviations, named entities, or identifiers
+        """
+        s = line.strip()
+        if not s or len(s) < 2 or len(s) > 100:
+            return False
+        # Sentence-ending punctuation suggests prose, not a term
+        if s.endswith(("?", "!", ".")):
+            return False
+        # A ". " in the middle suggests multi-sentence prose
+        if ". " in s:
+            return False
+        # Must have SOMETHING distinguishing it from random lowercase words —
+        # a capital letter (proper noun), underscore (code identifier), or internal period (URL-like).
+        if not any(c.isupper() for c in s) and "_" not in s and "." not in s:
+            return False
+        return True
+
+    @staticmethod
+    def _parse_keep_term_lines(text: str) -> tuple[set[str], list[tuple[str, ...]]]:
+        """Parse the raw KEEP/TERM/TRANSLATE lines, plus bare-line fallback."""
+        keep: set[str] = set()
+        translate_groups: list[tuple[str, ...]] = []
+
+        def already_known(variant_lower: str) -> bool:
+            """True if a variant is already in any KEEP or TERM group (case-insensitive)."""
+            if any(variant_lower == k.lower() for k in keep):
+                return True
+            return any(variant_lower == v.lower()
+                       for g in translate_groups for v in g)
+
+        for line in text.splitlines():
+            line = line.strip().lstrip("-* ").strip()
+            if not line or line.startswith("#"):
+                continue
+            upper = line.upper()
+            if upper.startswith("KEEP:"):
+                content = line.split(":", 1)[1].strip()
+                for variant in content.split("|"):
+                    v = variant.strip()
+                    if v:
+                        keep.add(v)
+            elif upper.startswith("TERM:") or upper.startswith("TRANSLATE:"):
+                content = line.split(":", 1)[1].strip()
+                # Either | (explicit variant separator) or natural
+                # 'Full Name (Abbrev)' inline definition splits into variants
+                raw_variants = [v.strip() for v in content.split("|") if v.strip()]
+                variants: list[str] = []
+                for rv in raw_variants:
+                    for sub in DocumentReviewer._split_parenthetical_variants(rv):
+                        if sub not in variants:
+                            variants.append(sub)
+                if variants:
+                    translate_groups.append(tuple(variants))
+            elif DocumentReviewer._looks_like_term_candidate(line):
+                # Bare-line fallback: model ignored the KEEP:/TERM: format but emitted a string that looks like a term.
+                # Default to TERM (will be translated by Step 1b). Single-variant group.
+                for sub in DocumentReviewer._split_parenthetical_variants(line):
+                    if not already_known(sub.lower()):
+                        translate_groups.append((sub,))
+
+        # Post-process: merge adjacent (phrase, abbreviation) bare-line pairs
+        # The LLM commonly emits an expansion immediately followed by its abbreviation on the next line
+        # Linking them as variants lets Step 1b translate only the (more informative) expansion
+        i = 0
+        while i < len(translate_groups) - 1:
+            g_curr = translate_groups[i]
+            g_next = translate_groups[i + 1]
+            if len(g_curr) == 1 and len(g_next) == 1:
+                phrase, candidate = g_curr[0], g_next[0]
+                if (len(phrase.split()) >= 2
+                        and DocumentReviewer._looks_like_abbreviation(candidate)
+                        and DocumentReviewer._could_be_abbreviation_of(candidate, phrase)):
+                    translate_groups[i] = (phrase, candidate)
+                    del translate_groups[i + 1]
+                    continue
+            i += 1
+        return keep, translate_groups
+
+    # ---- Step 1b (batched canonical translation) ----
+
+    def _translate_terms(self, terms: list[str],
+                         source_text: str | None = None) -> dict[str, str]:
+        """Translate source-language terms to target language in batches.
+
+        When `source_text` is provided, each term is annotated with the sentence around its first occurrence in the source.
+        This grounds the translation in the document's actual usage.
+
+        Returns {source_term: target_term}.
+        Terms the LLM fails to translate (or returns unchanged) are omitted.
+        """
+        if not terms:
+            return {}
+        result: dict[str, str] = {}
+        self._snap.step1b_input(terms)
+
+        for batch_idx, start in enumerate(range(0, len(terms), self.term_batch_size)):
+            batch = terms[start:start + self.term_batch_size]
+            # If we have source text, annotate each term with a short context snippet from where it first appears
+            lines = []
+            for t in batch:
+                ctx = (self._find_context_for_term(t, source_text)
+                       if source_text else None)
+                if ctx:
+                    lines.append(f'- {t} [context: "{ctx}"]')
+                else:
+                    lines.append(f"- {t}")
+            terms_block = "\n".join(lines)
+            prompt = TRANSLATE_TERMS_PROMPT.format(
+                source_lang=self.source_lang,
+                target_lang=self.target_lang,
+                terms=terms_block,
+            )
+            try:
+                resp = ollama.chat(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    options={"temperature": 0.1, "num_predict": 1024},
+                )
+            except Exception as e:
+                print(f"  [entity_extract] term-translation batch failed: {e}")
+                continue
+
+            text = resp["message"]["content"].strip()
+            self._snap.step1b_batch(batch_idx, prompt, text)
+
+            # Map by lowercased source for tolerant matching
+            wanted = {t.lower(): t for t in batch}
+            for line in text.splitlines():
+                line = line.strip().lstrip("-* ").strip()
+                m = self._TERM_LINE_RE.match(line)
+                if not m:
+                    continue
+                src_out, tgt_out = m.group(1).strip(), m.group(2).strip()
+                key = src_out.lower()
+                if key in wanted and tgt_out:
+                    result[wanted[key]] = tgt_out
+
+        self._snap.step1b_result(result)
+        return result
+
+    # ---- review() helpers ----
+
+    def _identify_terms_in_segments(self, segments: list[str]
+                        ) -> tuple[set[str], dict[str, list[str]]]:
+        """Run Step 1a per segment and union the results.
+
+        Returns (keep_terms, group_by_canonical), where group_by_canonical maps lowercased-canonical → list of source variants for that entity.
+        """
+        keep_terms: set[str] = set()
+        group_by_canonical: dict[str, list[str]] = {}
+        for i, segment in enumerate(segments):
+            try:
+                k, segment_groups = self._identify_segment(segment, segment_index=i)
+            except Exception as e:
+                print(f"  [entity_extract] segment {i+1} failed: {e} — skipping")
+                continue
+            keep_terms |= k
+            for variants in segment_groups:
+                canonical_key = variants[0].lower()
+                existing = group_by_canonical.setdefault(canonical_key, [])
+                seen_variants = {v.lower() for v in existing}
+                for v in variants:
+                    if v.lower() not in seen_variants:
+                        existing.append(v)
+                        seen_variants.add(v.lower())
+        return keep_terms, group_by_canonical
+
+    @staticmethod
+    def _reclassify_misclassified_keeps(
+            keep_terms: set[str],
+            groups: dict[str, list[str]],) -> tuple[set[str], dict[str, list[str]]]:
+        """Demote KEEPs that look like ordinary source-language phrases.
+
+        Otherwise the translator's correct rendering will trip the verbatim violation check. 
+        Moved entries become standalone TERM groups; if a group already exists for that canonical, the misclassified term is silently absorbed (the existing group "wins").
+        """
+        misclassified = {t for t in keep_terms if not DocumentReviewer._looks_like_real_keep(t)}
+        if not misclassified:
+            return keep_terms, groups
+        keep_terms = keep_terms - misclassified
+        for t in misclassified:
+            key = t.lower()
+            if key not in groups:
+                groups[key] = [t]
+        print(f"  [entity_extract] reclassified {len(misclassified)} KEEP → TERM (ordinary phrases): {sorted(misclassified)}")
+        return keep_terms, groups
+
+    @staticmethod
+    def _resolve_keep_translate_conflicts(
+            keep_terms: set[str],
+            groups: dict[str, list[str]],) -> tuple[set[str], dict[str, list[str]]]:
+        """Make KEEPs and TRANSLATE groups disjoint.
+
+        - If a KEEP's canonical matches a group canonical → group is removed (the KEEP wins; the canonical is verbatim, not translated).
+        - If a KEEP appears as a non-canonical variant in some TRANSLATE group → the KEEP is dropped (the group's translation wins).
+        """
+        for kt in list(keep_terms):
+            groups.pop(kt.lower(), None)
+
+        variant_lowers = {v.lower() for variants in groups.values() for v in variants}
+        absorbed = {kt for kt in keep_terms if kt.lower() in variant_lowers}
+        if absorbed:
+            keep_terms -= absorbed
+            print(f"  [entity_extract] absorbed {len(absorbed)} KEEP(s) into existing TRANSLATE groups: {sorted(absorbed)}")
+        return keep_terms, groups
+
+    @staticmethod
+    def _build_entries(keep_terms: set[str],
+                       groups: dict[str, list[str]],
+                       translations: dict[str, str]) -> tuple[list[GlossaryEntry], int]:
+        """Build GlossaryEntry objects from the merged Step 1a/1b state.
+
+        Returns (entries, num_demoted) where num_demoted counts identity translations that were rewritten to verbatim entries.
+        """
+        entries: list[GlossaryEntry] = []
+        seen: set[str] = set()
+
+        for term in sorted(keep_terms):
+            key = term.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(GlossaryEntry([term], term, kind="verbatim"))
+
+        demoted = 0
+        for canonical_key, variants in groups.items():
+            canonical = variants[0]
+            if canonical_key in seen:
+                continue
+            seen.add(canonical_key)
+            target = translations.get(canonical)
+            if not target or target.lower() == canonical.lower():
+                # Step 1b returned nothing or identity → keep all variants verbatim
+                entries.append(GlossaryEntry(list(variants), canonical, kind="verbatim"))
+                demoted += 1
+            else:
+                entries.append(GlossaryEntry(list(variants), target, kind="require"))
+        return entries, demoted
+
+    # ---- review() orchestrator ----
+
+    def extract_terms(self, blocks: list[Block]) -> list[GlossaryEntry]:
+        """Run Step 1a (per-segment identification) and Step 1b (batched translation of canonicals) and return the resulting GlossaryEntry list."""
+        segments = self._segment_text(blocks)
+        if not segments:
+            return []
+
+        print(f"  [entity_extract] identifying terms in {len(segments)} segment(s) ...")
+
+        keep_terms, groups = self._identify_terms_in_segments(segments)
+        keep_terms, groups = self._reclassify_misclassified_keeps(keep_terms, groups)
+        keep_terms, groups = self._resolve_keep_translate_conflicts(keep_terms, groups)
+
+        print(f"  [entity_extract] identification complete: {len(keep_terms)} KEEP, {len(groups)} TERM group(s)")
+        self._snap.step1_merged(keep_terms, groups)
+
+        canonicals = [variants[0] for variants in groups.values()]
+        if canonicals:
+            print(f"  [entity_extract] translating {len(canonicals)} canonical term(s) to {self.target_lang} ...")
+            # Concatenate all segments so Step 1b can find context for each term
+            full_source_text = "\n".join(segments)
+            translations = self._translate_terms(canonicals, source_text=full_source_text)
+        else:
+            translations = {}
+
+        entries, demoted = self._build_entries(keep_terms, groups, translations)
+        if demoted:
+            print(f"  [entity_extract] demoted {demoted} identity translation(s) to KEEP")
+        print(f"  [entity_extract] {len(entries)} total entries")
+        self._snap.review_entries(entries)
+        return entries
+
+    # ---- final glossary merging ----
+
+    @staticmethod
+    def _merge_into_final_glossary(
+            primary_entries: list[GlossaryEntry],
+            symbolic_entries: list[GlossaryEntry],
+            user_glossary: DomainGlossary | None,
+            log_label: str,) -> DomainGlossary:
+        """Merge LLM/loaded entries + symbolic supplement + user glossary.
+
+        Order in the final glossary: primary entries first, then any symbolic entries that don't collide, then user-provided entries at the end.
+        """
+        user_sources: set[str] = set()
+        if user_glossary:
+            for entry in user_glossary._entries:
+                for t in entry.source_terms:
+                    user_sources.add(t.lower())
+
+        kept: list[GlossaryEntry] = []
+        seen_sources: set[str] = set(user_sources)
+        for entry in primary_entries + symbolic_entries:
+            if any(t.lower() in seen_sources for t in entry.source_terms):
+                continue
+            kept.append(entry)
+            for t in entry.source_terms:
+                seen_sources.add(t.lower())
+
+        user_entries = user_glossary._entries if user_glossary else []
+        combined = DomainGlossary(kept + user_entries)
+        print(f"  [entity_extract] {log_label}: {len(kept)} primary + {len(user_entries)} user-provided = {len(combined._entries)} total entries")
+        return combined
+
+    # ---- build_glossary (the public entry point) ----
+
+    def build_glossary(self, blocks: list[Block],
+                       user_glossary: DomainGlossary | None = None,
+                       glossary_path: str | Path | None = None) -> DomainGlossary:
+        """Build a document-specific glossary from `blocks`.
+
+        This is the public entry point for Phase 1 of the pipeline (called when `translate_document(..., phases=...)` includes "build_glossary").
+
+        Two paths, depending on whether the glossary file already exists:
+
+        - File exists: load it (preserving any user edits to the file itself) instead of re-running the LLM review. 
+          New symbolic entries for snake_case identifiers and URLs in the document are added if they don't already appear in the file.
+
+        - File doesn't exist (or no path given): run `extract_terms()` to produce LLM-derived entries (Step 1a + Step 1b), then add the symbolic supplement.
+
+        In both paths the result is then merged with `user_glossary`:
+          - User-provided entries are appended at the end of the final list
+          - On collision (same source term), the user-provided entry wins
+
+        If `glossary_path` is provided, the result is written there. 
+        To skip the auto-load behavior on a re-run, delete the file first or pass `force_rebuild=True` to the top-level `translate_document`.
+        """
+        sym_entries = self._symbolic_entries(blocks)
+
+        if glossary_path and Path(glossary_path).exists():
+            print(f"  [entity_extract] loading existing glossary from {glossary_path}")
+            loaded = DomainGlossary.load(glossary_path)
+            combined = self._merge_into_final_glossary(
+                loaded._entries, sym_entries, user_glossary,
+                log_label="loaded glossary",
+            )
+            return combined
+
+        llm_entries = self.extract_terms(blocks)
+        combined = self._merge_into_final_glossary(
+            llm_entries, sym_entries, user_glossary,
+            log_label="glossary",
+        )
+
+        if glossary_path:
+            combined.save(glossary_path)
+        return combined

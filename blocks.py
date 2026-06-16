@@ -4,11 +4,9 @@ Block data model
 Shared between extractors (PDF, docx) and the document translator.
 
 A document is a list of Blocks. Each Block is a discriminated type
-(Heading, BodyPara, ListItem, Footnote, ImageBlock, TablePlaceholder,
-Separator).
+(Heading, BodyPara, ListItem, Footnote, ImageBlock, TablePlaceholder, Separator).
 
-Run is the atomic formatted text unit; both extractors emit Runs to
-preserve per-span bold/italic/size through the pipeline.
+Run is the atomic formatted text unit; both extractors emit Runs to preserve per-span bold/italic/size through the pipeline.
 """
 
 import re
@@ -45,6 +43,29 @@ def _runs_text(runs: List[Run]) -> str:
     return re.sub(r'\s+', ' ', "".join(r.text for r in runs)).strip()
 
 
+def _runs_to_markdown(runs: List[Run]) -> str:
+    """Encode runs as markdown, consolidating adjacent same-format runs.
+
+    Bold+italic -> ***text***, bold -> **text**, italic -> *text*, plain -> text.
+    Adjacent runs with identical formatting are merged before encoding so we don't emit *word* *word* when *word word* is correct.
+    """
+    consolidated = Run.consolidate(runs)
+    parts = []
+    for r in consolidated:
+        if not r.text:
+            continue
+        text = r.text
+        if r.bold and r.italic:
+            parts.append(f"***{text}***")
+        elif r.bold:
+            parts.append(f"**{text}**")
+        elif r.italic:
+            parts.append(f"*{text}*")
+        else:
+            parts.append(text)
+    return re.sub(r'\s+', ' ', ''.join(parts)).strip()
+
+
 @dataclass
 class Heading:
     level: int
@@ -54,6 +75,9 @@ class Heading:
     def text(self) -> str:
         return _runs_text(self.runs)
 
+    def to_markdown(self) -> str:
+        return _runs_to_markdown(self.runs)
+
 
 @dataclass
 class BodyPara:
@@ -62,6 +86,9 @@ class BodyPara:
     @property
     def text(self) -> str:
         return _runs_text(self.runs)
+
+    def to_markdown(self) -> str:
+        return _runs_to_markdown(self.runs)
 
 
 @dataclass
@@ -74,6 +101,9 @@ class ListItem:
     @property
     def body_text(self) -> str:
         return _runs_text(self.body_runs)
+
+    def body_to_markdown(self) -> str:
+        return _runs_to_markdown(self.body_runs)
 
 
 @dataclass

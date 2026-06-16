@@ -5,7 +5,7 @@ Usage:
 """
 
 from pathlib import Path
-from translate import translate_pdf, translate_docx
+from translate import translate_document
 
 SUPPORTED_EXTENSIONS = {".docx", ".pdf"}
 
@@ -30,9 +30,8 @@ def batch_translate(input_dir, output_dir, source_lang="Spanish",
     for i, filepath in enumerate(files):
         print(f"\n[{i+1}/{len(files)}] {filepath.name}")
         out_file = output_path / f"{filepath.stem}_translated.docx"
-        fn = translate_pdf if filepath.suffix.lower() == ".pdf" else translate_docx
         try:
-            meta = fn(
+            meta = translate_document(
                 str(filepath), str(out_file),
                 source_lang=source_lang, target_lang=target_lang,
                 model=model, glossary=glossary,

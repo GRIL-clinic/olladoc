@@ -16,7 +16,7 @@ import requests
 import streamlit as st
 
 import translate
-from translate import Translator, translate_docx, translate_pdf
+from translate import Translator, translate_document
 
 OLLAMA_URL = "http://localhost:11434"
 MENUBAR_LOG = Path.home() / ".ollama" / "logs" / "server.log"
@@ -553,12 +553,13 @@ def _worker(uploads, source_lang, target_lang, model, tmp_p):
         in_path = file_dir / name
         in_path.write_bytes(data)
         out_path = file_dir / f"{in_path.stem}_{target_lang.lower()}.docx"
-        fn = translate_pdf if suffix == ".pdf" else translate_docx
         try:
             with redirect_stdout(stream):
-                result = fn(str(in_path), str(out_path),
-                            source_lang=source_lang,
-                            target_lang=target_lang, model=model)
+                result = translate_document(
+                    str(in_path), str(out_path),
+                    source_lang=source_lang,
+                    target_lang=target_lang, model=model,
+                )
             with _JOB["lock"]:
                 _JOB["outputs"].extend(_collect_outputs(result))
                 _JOB["totals"]["blocks"] += result.get("total_blocks", 0)

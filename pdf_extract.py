@@ -1,21 +1,19 @@
 """
 PDF extractor (PyMuPDF)
 -----------------------
-Walks a PDF and produces a list of Blocks (Heading, BodyPara, ListItem,
-Footnote, ImageBlock, TablePlaceholder, Separator) plus raw table data.
+Walks a PDF and produces a list of Blocks 
+(Heading, BodyPara, ListItem Footnote, ImageBlock, TablePlaceholder, Separator) 
+plus raw table data.
 
 Pipeline:
 
     1. Spans: extract per-span text and formatting from PyMuPDF.
     2. Runs and Lines: collapse spans into formatted runs, grouped by line.
-    3. Paragraphs: group adjacent lines into logical paragraphs using
-       y-gaps and formatting transitions.
-    4. Blocks: classify each paragraph as Heading, BodyPara, ListItem,
-       Footnote, ImageBlock, TablePlaceholder, or Separator.
+    3. Paragraphs: group adjacent lines into logical paragraphs using y-gaps and formatting transitions.
+    4. Blocks: classify each paragraph as Heading, BodyPara, ListItem, Footnote, ImageBlock, TablePlaceholder, or Separator.
 
-Footnotes are emitted inline as Footnote blocks and routed by
-DocumentTranslator to FootnoteTranslator; tables are routed to
-TableTranslator. Images render directly into the body docx.
+Footnotes are emitted inline as Footnote blocks and routed by DocumentTranslator to FootnoteTranslator; 
+tables are routed to TableTranslator. Images render directly into the body docx.
 """
 
 import fitz
@@ -82,15 +80,6 @@ class Paragraph:
                 bold += c
         return bool(total) and bold > total / 2
 
-    @property
-    def is_italic(self) -> bool:
-        total = it = 0
-        for r in self.runs:
-            c = r.stripped_len
-            total += c
-            if r.italic:
-                it += c
-        return bool(total) and it > total / 2
 
 
 @dataclass
@@ -106,8 +95,8 @@ class PageContext:
 # ----- Extractor -----------------------------------------------------------
 
 class PdfExtractor:
-    """Parses a PDF into Blocks + raw tables. Footnotes are emitted inline
-    as Footnote blocks; the caller routes them to FootnoteTranslator."""
+    """Parses a PDF into Blocks + raw tables. Footnotes are emitted inline as Footnote blocks; 
+    the caller routes them to FootnoteTranslator."""
 
     def __init__(self, filepath):
         self.doc = fitz.open(filepath)
@@ -258,9 +247,9 @@ class PdfExtractor:
 
     @staticmethod
     def _split_list_item(para: Paragraph):
-        """If the paragraph has a leading italic title (with optional short
-        non-italic "N)" preamble) followed by a non-italic body, return
-        (title, body_runs, separator). Returns None if not a list item."""
+        """If the paragraph has a leading italic title (with optional short non-italic "N)" preamble) 
+        followed by a non-italic body, return (title, body_runs, separator).
+        Returns None if not a list item."""
         runs = para.runs
         if not runs:
             return None
@@ -364,8 +353,8 @@ class PdfExtractor:
 
     @staticmethod
     def _fold_lone_markers(blocks: List[Block]) -> List[Block]:
-        """Fold a lone Roman-numeral Heading onto the next Heading; fold
-        a stub Footnote onto the next Footnote."""
+        """Fold a lone Roman-numeral Heading onto the next Heading; 
+        fold a stub Footnote onto the next Footnote."""
         out: List[Block] = []
         i = 0
         while i < len(blocks):
@@ -410,8 +399,8 @@ class PdfExtractor:
 
     @classmethod
     def _merge_body_continuations(cls, blocks: List[Block]) -> List[Block]:
-        """Stitch paragraphs split across PyMuPDF block boundaries / page
-        breaks. Extends BodyPara or ListItem.body_runs."""
+        """Stitch paragraphs split across PyMuPDF block boundaries / page breaks. 
+        Extends BodyPara or ListItem.body_runs."""
         out: List[Block] = []
         for b in blocks:
             if isinstance(b, ListItem):

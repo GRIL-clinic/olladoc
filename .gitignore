@@ -1,5 +1,10 @@
-.ipynb_checkpoints
-__pycache__
 .DS_Store
+.ipynb_checkpoints
+.streamlit/
+__pycache__
+.temp/
+
 docs/
 translated*/
+ignore/
+glossary_debug_snapshot/
