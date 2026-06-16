@@ -17,6 +17,7 @@ Flow:
 import json
 import ollama
 import re
+import unicodedata
 
 from pathlib import Path
 
@@ -138,6 +139,14 @@ class DocumentReviewer:
         return (full, abbrev)
 
     @staticmethod
+    def _fold_key(s: str) -> str:
+        """Lowercase + accent-fold for cross-segment matching.
+        Used as the canonical-merge key; original-cased variant is preserved as the display form.
+        """
+        return ''.join(c for c in unicodedata.normalize('NFKD', s.lower())
+                       if not unicodedata.combining(c))
+
+    @staticmethod
     def _natural_case(s: str) -> str:
         """Lowercase ALL-CAPS multi-word phrases; leave acronyms and proper-case alone.
 
@@ -204,20 +213,39 @@ class DocumentReviewer:
 
     @staticmethod
     def _symbolic_entries(blocks: list[Block]) -> list[GlossaryEntry]:
-        """Extract snake_case variables and URLs as verbatim entries."""
+        """Extract snake_case variables and URLs as verbatim entries.
+
+        URLs are extracted first and masked out before snake_case scanning so path segments like `/historias_destacadas/` aren't mistaken for data identifiers. 
+        URL extraction strips trailing sentence punctuation (.,;:!?)) that the source text often leaves attached, and dedupes case-insensitively so the same URL with different path casing only produces one entry.
+        """
         full = "\n".join(DocumentReviewer._all_text_blocks(blocks))
         seen: set[str] = set()
-        entries = []
-        for m in DocumentReviewer._VAR_RE.finditer(full):
+        url_seen_lower: set[str] = set()
+        entries: list[GlossaryEntry] = []
+        # URLs first — collect, strip trailing punctuation, dedupe case-insensitively
+        url_spans: list[tuple[int, int]] = []
+        for m in DocumentReviewer._URL_RE.finditer(full):
+            url = m.group(0).rstrip('.,;:!?)')
+            url_spans.append((m.start(), m.start() + len(url)))
+            if not url:
+                continue
+            low = url.lower()
+            if low in url_seen_lower:
+                continue
+            url_seen_lower.add(low)
+            seen.add(url)
+            entries.append(GlossaryEntry([url], url, kind="verbatim"))
+        # Mask URL spans before snake_case scan so URL path segments don't get captured as data identifiers
+        masked_chars = list(full)
+        for start, end in url_spans:
+            for i in range(start, min(end, len(masked_chars))):
+                masked_chars[i] = ' '
+        masked = ''.join(masked_chars)
+        for m in DocumentReviewer._VAR_RE.finditer(masked):
             var = m.group(1)
             if var not in seen:
                 seen.add(var)
                 entries.append(GlossaryEntry([var], var, kind="verbatim"))
-        for m in DocumentReviewer._URL_RE.finditer(full):
-            term = m.group(0)
-            if term not in seen:
-                seen.add(term)
-                entries.append(GlossaryEntry([term], term, kind="verbatim"))
         return entries
 
     @staticmethod
@@ -302,13 +330,18 @@ class DocumentReviewer:
 
     # ---- segmentation ----
 
+    # Inline footnote / comment placeholder markers (e.g. ‹FN67›, ‹C2›) to omit from the glossary
+    _INLINE_REF_MARKER_RE = re.compile(r'‹(?:FN|C)\d+›')
+
     def _segment_text(self, blocks: list[Block]) -> list[str]:
         """Split document text into segments, breaking on paragraph boundaries.
 
-        Step 1a sees only headings / body paragraphs / list items. 
+        Step 1a sees only headings / body paragraphs / list items.
         Footnotes and comments are excluded.
+        Inline ‹FN…› / ‹C…› placeholder markers are stripped so the LLM doesn't pick them up as terms.
         """
-        parts = [p for p in self._all_text_blocks(blocks, include_footnotes_comments=False)
+        parts = [self._INLINE_REF_MARKER_RE.sub('', p)
+                 for p in self._all_text_blocks(blocks, include_footnotes_comments=False)
                  if p.strip()]
         segments: list[str] = []
         current: list[str] = []
@@ -430,12 +463,67 @@ class DocumentReviewer:
         reserved = {"keep", "term", "translate", "prefer"}
         for rv in raw_variants:
             for sub in DocumentReviewer._split_parenthetical_variants(rv):
+                # Strip stray surrounding quotes and trailing punctuation the LLM sometimes leaves on a variant
+                sub = sub.strip().strip('"').strip("'").strip().rstrip(":.,;")
+                if not sub:
+                    continue
                 low = sub.lower()
                 if low in reserved or low in seen_lower:
+                    continue
+                # Drop variants that look like prose, not entity names
+                if len(sub.split()) > 18:
                     continue
                 out.append(sub)
                 seen_lower.add(low)
         return out
+
+    # Common Spanish + English stopwords ignored when computing pairwise word overlap for the list-detection heuristic.
+    _OVERLAP_STOPWORDS = {
+        "de", "del", "la", "las", "los", "el", "y", "para", "en", "por", "a", "o", "u", "con", "sin", "sobre", "al",
+        "of", "the", "and", "or", "for", "in", "on", "to", "a", "an", "by",
+    }
+
+    @staticmethod
+    def _looks_like_acronym(s: str) -> bool:
+        """True if s is a short, all-uppercase, no-spaces token (e.g. CIDH, OG)."""
+        s = s.strip()
+        if " " in s or "\t" in s:
+            return False
+        letters = [c for c in s if c.isalpha()]
+        return bool(letters) and 2 <= len(letters) <= 7 and all(c.isupper() for c in letters)
+
+    @staticmethod
+    def _looks_like_entity_list(variants: list[str]) -> bool:
+        """Heuristic: does this group look like a `|`-separated LIST of distinct entities rather than VARIANTS of one entity?
+
+        Triggers when:
+        - 3+ variants, AND
+        - no variant is a short all-caps acronym (acronym presence is a strong signal of "abbreviation + expansion + short-form"), AND
+        - no pair of variants shares any non-stopword (real variants of one entity typically share at least one significant word).
+        """
+        if len(variants) < 3:
+            return False
+        if any(DocumentReviewer._looks_like_acronym(v) for v in variants):
+            return False
+        def words(v: str) -> set[str]:
+            tokens = re.findall(r'\w+', v.lower())
+            return {t for t in tokens if t not in DocumentReviewer._OVERLAP_STOPWORDS and len(t) > 1}
+        word_sets = [words(v) for v in variants]
+        for i in range(len(word_sets)):
+            for j in range(i + 1, len(word_sets)):
+                if word_sets[i] & word_sets[j]:
+                    return False
+        return True
+
+    @staticmethod
+    def _append_or_split(translate_groups: list[tuple[str, ...]],
+                         variants: list[str]) -> None:
+        """Append `variants` to translate_groups, splitting into singletons if it looks like a list of distinct entities rather than variants."""
+        if DocumentReviewer._looks_like_entity_list(variants):
+            for v in variants:
+                translate_groups.append((v,))
+        else:
+            translate_groups.append(tuple(variants))
 
     @staticmethod
     def _parse_keep_term_lines(text: str) -> tuple[set[str], list[tuple[str, ...]]]:
@@ -464,7 +552,7 @@ class DocumentReviewer:
                 variants = DocumentReviewer._clean_kt_content(content)
                 # Drop self-referential groups (e.g. "PDDH | PDDH")
                 if variants:
-                    translate_groups.append(tuple(variants))
+                    DocumentReviewer._append_or_split(translate_groups, variants)
             elif DocumentReviewer._looks_like_term_candidate(line):
                 # Bare-line fallback: model ignored the KEEP:/TERM: format but emitted a string that looks like a term.
                 # Route through _clean_kt_content so the same cleanups apply.
@@ -472,7 +560,7 @@ class DocumentReviewer:
                 variants = DocumentReviewer._clean_kt_content(line)
                 new = [v for v in variants if not already_known(v.lower())]
                 if new:
-                    translate_groups.append(tuple(new))
+                    DocumentReviewer._append_or_split(translate_groups, new)
 
         return keep, translate_groups
 
@@ -563,15 +651,16 @@ class DocumentReviewer:
                 continue
             keep_terms |= k
             for variants in segment_groups:
-                canonical_key = variants[0].lower()
+                canonical_key = self._fold_key(variants[0])
                 existing = group_by_canonical.setdefault(canonical_key, [])
-                seen_variants = {v.lower() for v in existing}
+                seen_variants = {self._fold_key(v) for v in existing}
                 for v in variants:
-                    variant_support[(canonical_key, v.lower())] = \
-                        variant_support.get((canonical_key, v.lower()), 0) + 1
-                    if v.lower() not in seen_variants:
+                    vkey = self._fold_key(v)
+                    variant_support[(canonical_key, vkey)] = \
+                        variant_support.get((canonical_key, vkey), 0) + 1
+                    if vkey not in seen_variants:
                         existing.append(v)
-                        seen_variants.add(v.lower())
+                        seen_variants.add(vkey)
         return keep_terms, group_by_canonical, variant_support
 
     @staticmethod
@@ -645,11 +734,11 @@ class DocumentReviewer:
             if ri != rj:
                 parent[ri] = rj
 
-        # Map each variant (lowercased) to all group indices that contain it.
+        # Map each variant (accent/case-folded) to all group indices that contain it.
         variant_to_groups: dict[str, list[int]] = {}
         for i, (_key, variants) in enumerate(items):
             for v in variants:
-                variant_to_groups.setdefault(v.lower(), []).append(i)
+                variant_to_groups.setdefault(DocumentReviewer._fold_key(v), []).append(i)
 
         # Cross-segment voting: drop singleton variant assignments that contradict a >=3-segment majority.
         # Conservative threshold - we only overrule a grouping when the alternative has strong consensus.
@@ -686,20 +775,22 @@ class DocumentReviewer:
                     union(base, idx)
 
         # Collect merged groups by root, skipping variants dropped by voting.
+        # Dedupe by accent/case-folded key
         merged: dict[int, list[str]] = {}
         for i, (_key, variants) in enumerate(items):
             root = find(i)
             target = merged.setdefault(root, [])
-            seen = {v.lower() for v in target}
+            seen = {DocumentReviewer._fold_key(v) for v in target}
             for v in variants:
-                if v.lower() in dropped.get(i, set()):
+                vkey = DocumentReviewer._fold_key(v)
+                if vkey in dropped.get(i, set()):
                     continue
-                if v.lower() not in seen:
+                if vkey not in seen:
                     target.append(v)
-                    seen.add(v.lower())
+                    seen.add(vkey)
 
         # For each merged set, pick the longest variant as the new canonical
-        # (it has the most context for Step 1b) and rebuild the dict keyed by that canonical lowercased.
+        # (it has the most context for Step 1b) and rebuild the dict keyed by that canonical (accent/case-folded).
         # Skip empty merged groups (every variant was dropped by voting).
         out: dict[str, list[str]] = {}
         for variants in merged.values():
@@ -709,7 +800,7 @@ class DocumentReviewer:
             canonical = max(variants, key=len)
             # Put canonical first, the rest in their original order
             ordered = [canonical] + [v for v in variants if v != canonical]
-            out[canonical.lower()] = ordered
+            out[DocumentReviewer._fold_key(canonical)] = ordered
 
         if len(out) < len(items):
             print(f"  [entity_extract] consolidated {len(items)} groups "
