@@ -9,9 +9,16 @@ Three entry kinds:
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+
+
+def _fold(s: str) -> str:
+    """Lowercase + strip accents so matching is tolerant of case/diacritic differences ("Comisión" == "COMISIÓN" == "comision")."""
+    s = unicodedata.normalize('NFKD', s.lower())
+    return ''.join(c for c in s if not unicodedata.combining(c))
 
 EntryKind = Literal["require", "verbatim", "prefer"]
 
@@ -23,7 +30,7 @@ _FILE_HEADER = """\
 #           PREFER: source → target      (soft guidance in prompt)
 # Variants: list multiple source forms of the same entity separated by '|',
 #           e.g.  TRANSLATE: full name | abbrev | short form → target
-# This file is deleted automatically when the translation finishes.
+# By default this file is retained after translation as a record of the rules applied.
 
 """
 
@@ -167,12 +174,14 @@ class DomainGlossary:
     # ---- matching / verification -------------------------------------------
 
     def _source_hit(self, text: str, entry: GlossaryEntry) -> bool:
-        text_lower = text.lower()
-        return any(t.lower() in text_lower for t in entry.source_terms)
+        # Fold both sides so a heading-cased chunk matches a natural-case entry.
+        text_folded = _fold(text)
+        return any(_fold(t) in text_folded for t in entry.source_terms)
 
     def _target_present(self, translation: str, entry: GlossaryEntry) -> bool:
-        t_lower = translation.lower()
-        return any(t.lower() in t_lower for t in [entry.target] + entry.target_alts)
+        # Fold both sides so the translator can render the term in whatever case fits the surrounding sentence without tripping a violation.
+        t_folded = _fold(translation)
+        return any(_fold(t) in t_folded for t in [entry.target] + entry.target_alts)
 
     def prompt_section(self, source_text: str) -> str:
         """Return a glossary prompt block for terms found in source_text.

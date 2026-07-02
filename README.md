@@ -16,7 +16,7 @@ Two phases run by default:
 1. build_glossary —  reviews the source document with the LLM and writes a glossary file (`{output}_glossary.txt`) next to the output path.
 2. translate — translates the document using that glossary, enforcing terminology rules and triggering targeted retries on violations.
 
-The glossary file is auto-deleted after Phase 2 completes. To inspect or edit it between phases, run Phase 1 alone, edit the file, then run Phase 2.
+The glossary file is retained after Phase 2 so you can see which terminology rules were applied. To inspect or edit it between phases, run Phase 1 alone, edit the file, then run Phase 2. Pass `keep_glossary=False` (or `--delete-glossary` on the CLI) if you don't want it kept; pass a path to archive a dated copy.
 
 ## Usage
 
@@ -33,7 +33,11 @@ Flags for two-phase workflow:
 - `--force-rebuild` — delete any existing glossary file before Phase 1
 - `--no-glossary` — skip the glossary entirely (raw translation)
 - `--seed N` — ollama generation seed (default 42)
+- `--archive-glossary PATH` — copy the glossary to PATH after Phase 2 (e.g. `archive/glossary_2026-06-21.txt`)
+- `--timestamp` — insert the current timestamp into output filenames so each run produces distinct (docx, glossary) pairs
 - `--phases build_glossary translate` — explicit form
+
+Every run appends one JSON line to `<output_dir>/translation_log.jsonl` recording timestamp, input, output, glossary, phases, and model.
 
 **Batch a folder:**
 

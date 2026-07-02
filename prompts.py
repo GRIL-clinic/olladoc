@@ -124,6 +124,7 @@ Do not translate word-for-word if it produces unnatural or incorrect {target_lan
 Rules:
 - Preserve inline markdown emphasis exactly: *italic*, **bold**, ***bold-italic***. Do not add markdown the source lacks.
 - Preserve snake_case identifiers (e.g. risk_alert) and ⟪V0⟫ placeholders verbatim.
+- Glossary entries are a *meaning* reference only — match the case and formatting of the source text in your output, NOT the case in the glossary entry. If the source says "PERSONAS DEFENSORAS" use ALL CAPS for the translation; if it says "personas defensoras" use lowercase. The glossary tells you WHAT to say, the source tells you HOW to format it.
 
 {glossary_section}
 
@@ -143,6 +144,7 @@ Do not translate word-for-word if it produces unnatural phrasing. Preserve struc
 Rules:
 - Preserve inline markdown emphasis exactly: *italic*, **bold**, ***bold-italic***. Do not add markdown the source lacks.
 - Preserve snake_case identifiers (e.g. risk_alert) and ⟪V0⟫ placeholders verbatim.
+- Glossary entries are a *meaning* reference only — match the case and formatting of the source text in your output, NOT the case in the glossary entry. The glossary tells you WHAT to say, the source tells you HOW to format it.
 
 {glossary_section}
 

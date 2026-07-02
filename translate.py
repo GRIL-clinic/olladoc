@@ -10,9 +10,12 @@ DocumentTranslator: Translates a Block list and renders it to .docx.
 """
 
 import io
+import json
 import re
+import shutil
 import ollama
 
+from datetime import datetime
 from pathlib import Path
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
@@ -630,39 +633,48 @@ class DocumentTranslator:
     def _emit_text(para, text: str, *, size: int | None = 11):
         """Emit text into a paragraph, parsing markdown emphasis and ‹FN› refs.
 
-        Handles ***bold-italic***, **bold**, *italic*, and ‹FNn› superscripts in a single regex pass.
-        Plain text between spans is emitted as-is.
-        size=None leaves font size unset (lets the paragraph style control it).
+        Handles ***bold-italic***, **bold**, *italic*, and ‹FNn› superscripts.
+        A ‹FNn› marker inside an emphasis span (e.g. `*Bedoya Lima v.‹FN3› Colombia*`) still becomes its own plain superscript run — footnote refs are annotations, not part of the surrounding formatting — while the text on either side keeps its italic/bold.
         """
+        def add_run(t, *, italic=False, bold=False, superscript=False):
+            if not t:
+                return
+            run = para.add_run(t)
+            if size is not None:
+                run.font.size = Pt(size)
+            if italic:
+                run.italic = True
+            if bold:
+                run.bold = True
+            if superscript:
+                run.font.superscript = True
+
+        def emit_with_fn(t, *, italic=False, bold=False):
+            # Split text on ‹FNn› markers so each marker becomes its own superscript run.
+            # FN markers are footnote annotations, not part of the surrounding content
+            # always rendered as plain superscript regardless of any italic/bold context.
+            last_inner = 0
+            for fm in _FN_MARKER_RE.finditer(t):
+                add_run(t[last_inner:fm.start()], italic=italic, bold=bold)
+                add_run(fm.group(1), superscript=True)
+                last_inner = fm.end()
+            add_run(t[last_inner:], italic=italic, bold=bold)
+
         last = 0
         for m in _SPAN_RE.finditer(text):
             if m.start() > last:
-                run = para.add_run(text[last:m.start()])
-                if size is not None:
-                    run.font.size = Pt(size)
+                emit_with_fn(text[last:m.start()])
             g1, g2, g3, g4 = m.group(1), m.group(2), m.group(3), m.group(4)
-            if g4 is not None:          # ‹FNn› → superscript
-                run = para.add_run(g4)
-                if size is not None:
-                    run.font.size = Pt(size)
-                run.font.superscript = True
+            if g4 is not None:          # top-level ‹FNn› is superscript
+                add_run(g4, superscript=True)
             else:
                 content = g1 or g2 or g3
-                run = para.add_run(content)
-                if size is not None:
-                    run.font.size = Pt(size)
-                if g1:                  # ***bold-italic***
-                    run.bold = True
-                    run.italic = True
-                elif g2:                # **bold**
-                    run.bold = True
-                elif g3:                # *italic*
-                    run.italic = True
+                italic = bool(g1 or g3)
+                bold = bool(g1 or g2)
+                emit_with_fn(content, italic=italic, bold=bold)
             last = m.end()
         if last < len(text):
-            run = para.add_run(text[last:])
-            if size is not None:
-                run.font.size = Pt(size)
+            emit_with_fn(text[last:])
 
     def _render_body(self, doc, block: BodyPara, translated: str):
         para = doc.add_paragraph()
@@ -791,7 +803,8 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
                        target_lang="English", model="translategemma",
                        review_model=None, glossary=None,
                        verbose_glossary=False, phases=ALL_PHASES,
-                       force_rebuild=False, dump_dir=None, seed=42):
+                       force_rebuild=False, dump_dir=None, seed=42,
+                       keep_glossary=True, timestamp=False):
     """Translate a .docx or .pdf file using the two-phase pipeline.
 
     Phases (pass as a tuple to `phases=`):
@@ -821,6 +834,19 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
 
     `seed` — passed to ollama as `options.seed` for every LLM call (Step 1a/1b, Phase 2 per-chunk translation, table cell retries).
 
+    `keep_glossary` controls what happens to the glossary file after Phase 2 completes:
+      True (default) — retain the file at its default location ({output}_glossary.txt).
+                       Useful as a record of which terminology rules were applied.
+      False          — delete the glossary file after Phase 2.
+      str | Path     — copy the file to this path and delete the working copy.
+                       Useful for dated archives, e.g.
+                       `keep_glossary=f"archive/glossary_{date.today()}.txt"`.
+
+    `timestamp` — when True, insert the current timestamp into the output stem (e.g. `foo.docx` -> `foo_2026-06-24_0915.docx`).
+    # The glossary inherits the same timestamp, so each run produces a distinct (docx, glossary) pair that never overwrites prior runs. 
+
+    Every translation completion appends a JSON line to `<output_dir>/translation_log.jsonl` recording timestamp, input, output, glossary, phases, and model.
+
     Returns the translation result dict, or `{"glossary_path": ...}` when only Phase 1 ran.
     """
     from entity_extract import DocumentReviewer
@@ -834,6 +860,11 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
     blocks, tables = _extract_blocks(filepath)
 
     out_p = Path(output_path)
+    run_ts = datetime.now().strftime("%Y-%m-%d_%H%M")
+    if timestamp:
+        # Insert timestamp before the extension so the glossary inherits it
+        out_p = out_p.with_name(f"{out_p.stem}_{run_ts}{out_p.suffix}")
+        output_path = str(out_p)
     out_p.parent.mkdir(parents=True, exist_ok=True)
     glossary_path = out_p.parent / f"{out_p.stem}_glossary.txt"
 
@@ -881,6 +912,15 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
         else:
             print(f"\nGlossary written to {glossary_path}")
         print("Edit it if needed, then re-run with phases=('translate',) or the default both-phases to consume it.")
+        _append_run_log(out_p.parent, {
+            "timestamp": run_ts,
+            "input": str(filepath),
+            "output": None,
+            "glossary": str(glossary_path),
+            "phases": list(phases),
+            "model": model,
+            "regenerated": not glossary_pre_existed,
+        })
         return {"glossary_path": str(glossary_path), "phases": list(phases), "regenerated": not glossary_pre_existed}
 
     if no_glossary:
@@ -893,8 +933,39 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
     result = dt.translate_to_docx(blocks, tables, output_path)
     result["input"] = filepath
     result["phases"] = list(phases)
-    DomainGlossary.delete(glossary_path)
+    if keep_glossary is False:
+        DomainGlossary.delete(glossary_path)
+    elif keep_glossary is True:
+        result["glossary_path"] = str(glossary_path)
+        print(f"  [translate_document] glossary retained at {glossary_path}")
+    else:
+        archive = Path(keep_glossary)
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(glossary_path, archive)
+        DomainGlossary.delete(glossary_path)
+        result["glossary_path"] = str(archive)
+        print(f"  [translate_document] glossary archived to {archive}")
+    _append_run_log(out_p.parent, {
+        "timestamp": run_ts,
+        "input": str(filepath),
+        "output": str(out_p),
+        "glossary": result.get("glossary_path"),  # None when keep_glossary=False
+        "phases": list(phases),
+        "model": model,
+    })
     return result
+
+
+def _append_run_log(output_dir: Path, entry: dict) -> None:
+    """Append one JSON line to translation_log.jsonl in the output directory.
+    Records timestamp + input/output/glossary paths + phases + model.
+    """
+    log_path = Path(output_dir) / "translation_log.jsonl"
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"  [translate_document] could not append to {log_path}: {e}")
 
 
 if __name__ == "__main__":
@@ -923,6 +994,10 @@ if __name__ == "__main__":
                         help="Run the translation without any glossary rules. Skips prompt injection and violation checks.")
     parser.add_argument("--seed", type=int, default=42,
                         help="Integer seed for ollama generation (default 42).")
+    parser.add_argument("--archive-glossary", metavar="PATH", default=None,
+                        help="Copy the glossary file to PATH after Phase 2, then delete the working copy. Useful for dated archives, e.g. --archive-glossary archive/glossary_2026-06-21.txt.")
+    parser.add_argument("--timestamp", action="store_true",
+                        help="Insert the current timestamp into the output stem (e.g. foo_2026-06-24_0915.docx) so each run produces a distinct (docx, glossary) pair. Every run also appends a JSON line to translation_log.jsonl in the output directory.")
     args = parser.parse_args()
 
     if args.phases is not None:
@@ -942,4 +1017,6 @@ if __name__ == "__main__":
         force_rebuild=args.force_rebuild,
         glossary=False if args.no_glossary else None,
         seed=args.seed,
+        keep_glossary=args.archive_glossary if args.archive_glossary else True,
+        timestamp=args.timestamp,
     )

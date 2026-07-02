@@ -146,18 +146,54 @@ class DocumentReviewer:
         return ''.join(c for c in unicodedata.normalize('NFKD', s.lower())
                        if not unicodedata.combining(c))
 
-    @staticmethod
-    def _natural_case(s: str) -> str:
-        """Lowercase ALL-CAPS multi-word phrases; leave acronyms and proper-case alone.
+    # Connectives kept lowercase when title-casing all-caps phrases.
+    _TITLECASE_LOWERCASE_WORDS = {
+        "de", "del", "la", "las", "los", "el", "y", "para", "en", "por", "a",
+        "o", "u", "con", "sin", "sobre", "al",
+        "of", "the", "and", "or", "for", "in", "on", "to", "an", "by",
+    }
 
-        Glossary entries built from headings often end up in all caps.
-        This normalizes only the caps case.
-        """
+    @staticmethod
+    def _is_all_caps_multiword(s: str) -> bool:
+        """True if s is a multi-word phrase with every word all-uppercase."""
         words = s.split()
         alpha_words = [w for w in words if any(c.isalpha() for c in w)]
-        if len(alpha_words) >= 2 and all(w == w.upper() for w in alpha_words):
-            return s.lower()
-        return s
+        return len(alpha_words) >= 2 and all(w == w.upper() for w in alpha_words)
+
+    @staticmethod
+    def _title_case_phrase(s: str) -> str:
+        """Title-case an all-caps phrase, keeping connectives lowercase and short embedded acronyms (≤4 letters) as-is."""
+        out = []
+        for i, w in enumerate(s.split()):
+            wlower = w.lower()
+            if i > 0 and wlower in DocumentReviewer._TITLECASE_LOWERCASE_WORDS:
+                out.append(wlower)
+            elif sum(c.isalpha() for c in w) <= 4:
+                # Likely an embedded acronym (CIDH, IDH, ONU, OEA, etc.)
+                out.append(w)
+            else:
+                out.append(w[0].upper() + w[1:].lower())
+        return " ".join(out)
+
+    @staticmethod
+    def _normalize_group_case(variants: list[str]) -> list[str]:
+        """Normalize ALL-CAPS variants using sibling case as a signal; 
+        title-case if any sibling is mixed-case (proper noun), else lowercase.
+        Non-all-caps variants pass through unchanged."""
+        has_titlecased_sibling = any(
+            (not DocumentReviewer._is_all_caps_multiword(v)
+             and any(c.isupper() for c in v) and any(c.islower() for c in v))
+            for v in variants
+        )
+        out = []
+        for v in variants:
+            if not DocumentReviewer._is_all_caps_multiword(v):
+                out.append(v)
+            elif has_titlecased_sibling:
+                out.append(DocumentReviewer._title_case_phrase(v))
+            else:
+                out.append(v.lower())
+        return out
 
     @staticmethod
     def _looks_like_real_keep(term: str) -> bool:
@@ -192,16 +228,16 @@ class DocumentReviewer:
 
     @staticmethod
     def _all_text_blocks(blocks: list[Block],
-                        include_footnotes_comments: bool = True) -> list[str]:
+                        include_footnotes_comments: bool = True,
+                        include_headings: bool = True) -> list[str]:
         """Flatten a Block list into a list of textual strings.
 
-        `include_footnotes_comments=False` excludes Footnote and Comment blocks from the output. 
-        Useful when feeding text to Step 1a, since footnotes are typically citations (Ibid., Serie C, case refs) that pollute the glossary, and comments are reviewer notes that aren't translation targets. 
-        Symbolic supplement (URL / snake_case extraction) still uses the default True so URLs in footnotes get captured.
+        `include_footnotes_comments=False` excludes Footnote and Comment blocks from the output.
+        `include_headings=False` excludes Heading blocks.
         """
         parts = []
         for b in blocks:
-            if isinstance(b, Heading):
+            if isinstance(b, Heading) and include_headings:
                 parts.append(b.text)
             elif isinstance(b, BodyPara):
                 parts.append(b.text)
@@ -336,12 +372,16 @@ class DocumentReviewer:
     def _segment_text(self, blocks: list[Block]) -> list[str]:
         """Split document text into segments, breaking on paragraph boundaries.
 
-        Step 1a sees only headings / body paragraphs / list items.
-        Footnotes and comments are excluded.
+        Step 1a sees only body paragraphs / list items.
+        Headings, footnotes, and comments are excluded;
+        headings tend to be all-caps section labels with generic vocabulary that produce noisy glossary entries; 
+        real entity names also appear in body text with better context for Step 1b.
         Inline ‹FN…› / ‹C…› placeholder markers are stripped so the LLM doesn't pick them up as terms.
         """
         parts = [self._INLINE_REF_MARKER_RE.sub('', p)
-                 for p in self._all_text_blocks(blocks, include_footnotes_comments=False)
+                 for p in self._all_text_blocks(blocks,
+                                                include_footnotes_comments=False,
+                                                include_headings=False)
                  if p.strip()]
         segments: list[str] = []
         current: list[str] = []
@@ -452,14 +492,23 @@ class DocumentReviewer:
             s = s.split("→", 1)[0].strip().strip("|").strip()
         if not s:
             return []
-        # If there's no |, but there's a ": " in the middle, treat colon as variant separator. 
-        if "|" not in s and ": " in s:
+        # "X: Y" acts as a variant separator when there's no | on the line.
+        # "X: X" (self-annotation like "BLUEPRINT: blueprint") always collapses to the right side
+        def _collapse_self_annotation(v: str) -> str:
+            if ": " in v:
+                left, _, right = v.partition(": ")
+                if left.strip().lower() == right.strip().lower():
+                    return right.strip()
+            return v
+
+        if "|" not in s and ": " in s and _collapse_self_annotation(s) == s:
             s = s.replace(": ", " | ", 1)
-        raw_variants = [v.strip() for v in s.split("|") if v.strip()]
+        raw_variants = [_collapse_self_annotation(v.strip())
+                        for v in s.split("|") if v.strip()]
         out: list[str] = []
         seen_lower: set[str] = set()
-        # Drop reserved prompt prefix tokens
-        # if the LLM accidentally echoes them as variants (e.g. "KEEP: GLOBAL WITNESS: KEEP")
+        # Drop reserved prompt prefix tokens if the LLM accidentally echoes them as variants 
+        # (e.g. "KEEP: GLOBAL WITNESS: KEEP")
         reserved = {"keep", "term", "translate", "prefer"}
         for rv in raw_variants:
             for sub in DocumentReviewer._split_parenthetical_variants(rv):
@@ -862,8 +911,8 @@ class DocumentReviewer:
         keep_terms, groups = self._resolve_keep_translate_conflicts(keep_terms, groups)
         # Collapse duplicate entities the cross-segment merge missed (e.g. same entity emitted with different canonical-first variants per segment).
         groups = self._consolidate_groups_by_shared_variants(groups, variant_support)
-        # Normalize ALL-CAPS variants picked up from headings so Step 1b produces natural-case translations and Phase 2 isn't forced into caps.
-        groups = {k: [self._natural_case(v) for v in variants]
+        # Normalize ALL-CAPS variants: title-case if any sibling is title-cased (proper noun signal), else lowercase.
+        groups = {k: self._normalize_group_case(variants)
                   for k, variants in groups.items()}
 
         print(f"  [entity_extract] identification complete: {len(keep_terms)} KEEP, {len(groups)} TERM group(s)")
@@ -875,8 +924,6 @@ class DocumentReviewer:
             # Concatenate all segments so Step 1b can find context for each term
             full_source_text = "\n".join(segments)
             translations = self._translate_terms(canonicals, source_text=full_source_text)
-            # Defensive: normalize any all caps targets the LLM might have echoed back in caps.
-            translations = {k: self._natural_case(v) for k, v in translations.items()}
         else:
             translations = {}
 
