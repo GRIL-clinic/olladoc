@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>olladoc</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <main class="page">
+    <!-- ============================= HEADER ============================= -->
+    <div class="header-row">
+      <h1 class="title">olladoc</h1>
+      <button id="aboutBtn" class="btn-tertiary" title="About" type="button">✨</button>
+    </div>
+    <p class="caption">Local <code>.pdf</code> / <code>.docx</code> translation via Ollama</p>
+
+    <!-- ======================== OLLAMA STATUS BAR ======================= -->
+    <div class="ollama-bar">
+      <div class="ollama-status">
+        <a href="#" id="viewLogsLink" title="Show logs">
+          🔍&nbsp;&nbsp;<strong>Ollama:</strong>
+          <span id="ollamaStatusText" class="muted">checking…</span>
+        </a>
+      </div>
+      <div class="ollama-actions">
+        <button id="startOllamaBtn" class="btn-secondary" type="button" disabled>Start</button>
+        <button id="stopOllamaBtn" class="btn-secondary" type="button" disabled>Stop</button>
+      </div>
+    </div>
+
+    <hr class="divider" />
+
+    <!-- ============================= FORM ============================== -->
+    <form id="form" enctype="multipart/form-data">
+      <!-- Documents ---------------------------------------------------- -->
+      <label class="field-label">Documents</label>
+      <label class="dropzone" id="dropzone">
+        <input type="file" name="files" id="files" multiple
+               accept=".pdf,.docx" hidden />
+        <div class="dropzone-inner">
+          <div class="dropzone-icon">☁️</div>
+          <div class="dropzone-text">
+            <strong>Drag and drop files here</strong><br>
+            <span class="dropzone-hint">Limit 200 MB per file · PDF, DOCX</span>
+          </div>
+          <span class="btn-secondary">Browse files</span>
+        </div>
+      </label>
+      <ul class="file-list" id="fileList"></ul>
+
+      <!-- Languages ---------------------------------------------------- -->
+      <div class="two-col">
+        <div>
+          <label class="field-label" for="sourceLang">Source language</label>
+          <select id="sourceLang" name="source_lang" class="select"></select>
+        </div>
+        <div>
+          <label class="field-label" for="targetLang">Target language</label>
+          <select id="targetLang" name="target_lang" class="select"></select>
+        </div>
+      </div>
+
+      <!-- Model — dropdown when Ollama is running, text input otherwise. -->
+      <label class="field-label" for="model">Model</label>
+      <select id="modelSelect" name="model" class="select" hidden></select>
+      <input type="text" id="modelInput" name="model" class="text-input"
+             value="translategemma" />
+
+      <!-- Pull a new model ------------------------------------------------ -->
+      <details class="expander" id="pullExpander">
+        <summary>Pull a new model</summary>
+        <div class="expander-body">
+          <p class="caption">
+            Browse all models at
+            <a href="https://ollama.com/library" target="_blank">ollama.com/library</a>.
+            Any general-purpose model can translate; language support varies.
+          </p>
+          <div class="pull-row">
+            <input type="text" id="pullName" class="text-input"
+                   placeholder="e.g. translategemma" />
+            <button id="pullBtn" class="btn-secondary" type="button" disabled>Pull</button>
+          </div>
+          <div id="pullProgress" class="pull-progress" hidden>
+            <pre id="pullLog" class="log"></pre>
+            <button id="cancelPullBtn" class="btn-secondary" type="button">Cancel</button>
+          </div>
+        </div>
+      </details>
+
+      <!-- Workflow ----------------------------------------------------- -->
+      <label class="field-label">Workflow</label>
+      <div class="radio-group">
+        <label class="radio">
+          <input type="radio" name="workflow" value="oneshot" checked />
+          <span>One-shot</span>
+        </label>
+        <label class="radio">
+          <input type="radio" name="workflow" value="twophase" />
+          <span>Two-phase (edit glossary between)</span>
+        </label>
+      </div>
+
+      <!-- Advanced ----------------------------------------------------- -->
+      <details class="expander">
+        <summary>Advanced options</summary>
+        <div class="expander-body">
+          <label class="checkbox">
+            <input type="checkbox" name="keep_glossary" checked />
+            <span>Keep glossary file after translation</span>
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" name="timestamp" />
+            <span>Timestamp output filenames</span>
+          </label>
+        </div>
+      </details>
+
+      <!-- Output folder ------------------------------------------------ -->
+      <label class="field-label" for="outputDir">Output folder</label>
+      <input type="text" id="outputDir" name="output_dir" class="text-input" />
+
+      <!-- Submit ------------------------------------------------------- -->
+      <button id="submitBtn" type="submit" class="btn-primary" disabled>
+        Translate
+      </button>
+    </form>
+
+    <!-- =========================== PROGRESS ============================ -->
+    <section id="progress" class="section" hidden>
+      <h2 id="progressTitle" class="section-title">Progress</h2>
+      <div class="progressbar-wrap">
+        <div class="progressbar"><div id="progressFill" class="progressbar-fill"></div></div>
+        <div id="progressText" class="progress-text">0 / 0</div>
+      </div>
+      <pre id="log" class="log"></pre>
+    </section>
+
+    <!-- =========================== EDIT UI ============================= -->
+    <section id="edit" class="section" hidden>
+      <h2 class="section-title">Review glossaries</h2>
+      <p class="caption">
+        Phase 1 finished. Review the terminology rules below (fix wrong translations,
+        remove noise, change TRANSLATE→KEEP, etc.), then click
+        <strong>Continue to Phase 2</strong> to translate.
+      </p>
+      <div id="editList"></div>
+      <div class="edit-actions">
+        <button id="continueBtn" class="btn-primary" type="button">Continue to Phase 2</button>
+        <button id="saveBtn" class="btn-secondary" type="button">Save changes</button>
+        <button id="cancelBtn" class="btn-secondary" type="button">Cancel</button>
+        <span id="saveStatus" class="save-status" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <!-- =========================== RESULTS ============================= -->
+    <section id="results" class="section" hidden>
+      <div id="resultsBanner"></div>
+      <div id="resultsBody"></div>
+    </section>
+
+    <!-- =========================== LOGS DIALOG ========================= -->
+    <dialog id="logsDialog" class="dialog dialog-wide">
+      <div class="dialog-body">
+        <div class="dialog-header">
+          <h2 class="dialog-title">Ollama logs</h2>
+          <button id="refreshLogsBtn" class="btn-secondary" type="button">Refresh</button>
+        </div>
+        <p class="caption" id="logsPath"></p>
+        <pre id="logsBody" class="log log-tall"></pre>
+        <form method="dialog" class="dialog-actions">
+          <button class="btn-secondary" type="submit">Close</button>
+        </form>
+      </div>
+    </dialog>
+
+    <!-- =========================== ABOUT DIALOG ======================= -->
+    <dialog id="aboutDialog" class="dialog">
+      <div class="dialog-body">
+        <h2 class="dialog-title">About olladoc</h2>
+        <p><strong>olladoc</strong> translates <code>.pdf</code> and <code>.docx</code>
+          files locally; no data leaves your machine. Powered by
+          <a href="https://ollama.com" target="_blank">Ollama</a> and
+          Google's <a href="https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/" target="_blank">TranslateGemma</a>
+          by default; any Ollama-compatible model works.</p>
+        <hr />
+        <h3>New to Ollama?</h3>
+        <ol>
+          <li>Install Ollama: <code>brew install ollama</code> — or download from
+            <a href="https://ollama.com/download" target="_blank">ollama.com/download</a>.</li>
+          <li>Pull the default translation model:
+            <code>ollama pull translategemma</code></li>
+          <li>Start Ollama (menubar app or <code>ollama serve</code>).</li>
+          <li>Upload files, pick source/target languages, click <strong>Translate</strong>.</li>
+        </ol>
+        <form method="dialog" class="dialog-actions">
+          <button class="btn-secondary" type="submit">Close</button>
+        </form>
+      </div>
+    </dialog>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

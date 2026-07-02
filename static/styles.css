@@ -1,0 +1,450 @@
+:root {
+  --primary: #ff4b4b;
+  --primary-hover: #ff6b6b;
+  --text: #31333f;
+  --text-muted: rgba(49, 51, 63, 0.6);
+  --bg: #ffffff;
+  --surface: #f0f2f6;
+  --border: rgba(49, 51, 63, 0.2);
+  --border-strong: rgba(49, 51, 63, 0.3);
+  --radius: 0.5rem;
+  --radius-sm: 0.25rem;
+  --font: "Source Sans Pro", "Source Sans 3", -apple-system,
+          BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --mono: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 6rem 1.5rem 8rem;
+}
+
+/* --- Header ---------------------------------------------------------- */
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.title {
+  font-size: 2.75rem;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+.caption {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  margin: 0.25rem 0 0;
+}
+.caption code { font-family: var(--mono); font-size: 0.85em; }
+
+.divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.2rem 0;
+}
+
+/* --- Field labels ---------------------------------------------------- */
+.field-label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 400;
+  margin: 1.25rem 0 0.35rem;
+  color: var(--text);
+}
+
+/* --- Dropzone -------------------------------------------------------- */
+.dropzone {
+  display: block;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  cursor: pointer;
+  background: var(--bg);
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+.dropzone:hover { background: var(--surface); }
+.dropzone.dragover {
+  background: var(--surface);
+  border-color: var(--primary);
+}
+.dropzone-inner {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.dropzone-icon { font-size: 1.5rem; }
+.dropzone-text { flex: 1; font-size: 0.95rem; }
+.dropzone-hint { font-size: 0.8rem; color: var(--text-muted); }
+
+.file-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+.file-list li {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-top: 0.25rem;
+  font-size: 0.9rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.file-list .filesize { color: var(--text-muted); font-size: 0.8rem; }
+
+/* --- Layout helpers -------------------------------------------------- */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+@media (max-width: 480px) {
+  .two-col { grid-template-columns: 1fr; }
+}
+
+/* --- Inputs ---------------------------------------------------------- */
+.text-input,
+.select {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 0.95rem;
+  background: var(--bg);
+  color: var(--text);
+  transition: border-color 0.1s ease, box-shadow 0.1s ease;
+}
+.text-input:focus,
+.select:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+.select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%2331333F' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 1.1rem;
+  padding-right: 2rem;
+}
+
+/* --- Radio group ----------------------------------------------------- */
+.radio-group {
+  display: flex;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+.radio,
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+  user-select: none;
+}
+.radio input,
+.checkbox input {
+  accent-color: var(--primary);
+}
+
+.checkbox { display: flex; margin: 0.4rem 0; }
+
+/* --- Expander (details/summary) ------------------------------------- */
+.expander {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 0.75rem;
+  margin-top: 1rem;
+  background: var(--bg);
+}
+.expander summary {
+  cursor: pointer;
+  padding: 0.6rem 0;
+  font-size: 0.95rem;
+  list-style: none;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.expander summary::-webkit-details-marker { display: none; }
+.expander summary::before {
+  content: "▸";
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+.expander[open] summary::before { transform: rotate(90deg); }
+.expander-body {
+  padding: 0 0 0.75rem 1rem;
+}
+
+/* --- Buttons --------------------------------------------------------- */
+.btn-primary,
+.btn-secondary,
+.btn-tertiary {
+  font-family: inherit;
+  font-size: 0.95rem;
+  padding: 0.4rem 1rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.1s ease, border-color 0.1s ease, color 0.1s ease;
+  line-height: 1.25;
+}
+.btn-primary {
+  background: var(--primary);
+  color: white;
+  border: 1px solid var(--primary);
+  margin-top: 1.5rem;
+  padding: 0.55rem 1.2rem;
+  font-weight: 500;
+  min-width: 6rem;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+.btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.btn-secondary {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+.btn-tertiary {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 1.1rem;
+  padding: 0.25rem 0.5rem;
+}
+.btn-tertiary:hover { background: var(--surface); }
+
+/* --- Sections (progress / edit / results) --------------------------- */
+.section {
+  margin-top: 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+.section-title {
+  font-size: 1.35rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+}
+
+/* --- Progress bar ---------------------------------------------------- */
+.progressbar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.progressbar {
+  flex: 1;
+  height: 0.35rem;
+  background: var(--surface);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progressbar-fill {
+  height: 100%;
+  background: var(--primary);
+  width: 0%;
+  transition: width 0.25s ease;
+}
+.progress-text {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  min-width: 3.5rem;
+  text-align: right;
+}
+
+/* --- Log ------------------------------------------------------------- */
+.log {
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 1rem;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  max-height: 22rem;
+  overflow: auto;
+  margin: 0.75rem 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* --- Edit list ------------------------------------------------------- */
+.gedit {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.9rem;
+  margin: 0.75rem 0;
+  background: var(--bg);
+}
+.gedit-title {
+  font-weight: 500;
+  font-size: 0.95rem;
+  margin: 0 0 0.5rem;
+}
+.gedit textarea {
+  width: 100%;
+  min-height: 22rem;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  resize: vertical;
+  color: var(--text);
+  background: var(--bg);
+}
+.gedit textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+/* --- Edit actions row (Continue / Save / Cancel + save status) ------ */
+.edit-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+.save-status {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-left: 0.35rem;
+}
+
+/* --- Result banners -------------------------------------------------- */
+.banner {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+}
+.banner.success { background: #d1f7d5; color: #155724; }
+.banner.warning { background: #fff3cd; color: #856404; }
+.banner.error   { background: #f8d7da; color: #721c24; }
+
+.saved-list { margin: 0.75rem 0; padding: 0; list-style: none; }
+.saved-list li {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.6rem;
+  margin-top: 0.35rem;
+  word-break: break-all;
+}
+
+.download-link {
+  display: block;
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  color: var(--primary);
+  text-decoration: none;
+  width: fit-content;
+}
+.download-link:hover { text-decoration: underline; }
+
+/* Make the "Start another translation" button clear the downloads. */
+.reset-btn {
+  display: block;
+  margin-top: 1.5rem;
+}
+
+/* --- Ollama status bar ---------------------------------------------- */
+.ollama-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+.ollama-status a {
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.95rem;
+}
+.ollama-status a:hover { text-decoration: underline; }
+.ollama-status .muted { color: var(--text-muted); }
+.ollama-status .status-ok { color: #09ab3b; font-weight: 500; }
+.ollama-status .status-bad { color: var(--primary); font-weight: 500; }
+.ollama-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.ollama-actions button {
+  min-width: 4.5rem;
+}
+
+/* --- Pull expander --------------------------------------------------- */
+.pull-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.pull-progress {
+  margin-top: 0.75rem;
+}
+.pull-progress .log {
+  max-height: 8rem;
+  margin-bottom: 0.5rem;
+}
+
+/* --- Dialog ---------------------------------------------------------- */
+.dialog {
+  border: none;
+  border-radius: var(--radius);
+  padding: 0;
+  max-width: 36rem;
+  width: 100%;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+.dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
+.dialog-body { padding: 1.5rem 1.5rem 1.25rem; }
+.dialog-title { margin: 0 0 0.75rem; font-size: 1.3rem; font-weight: 600; }
+.dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.35rem;
+  gap: 1rem;
+}
+.dialog-header .dialog-title { margin: 0; }
+.dialog-actions { display: flex; justify-content: flex-end; margin-top: 1rem; }
+.dialog-wide { max-width: 52rem; }
+.log-tall { max-height: 30rem; }

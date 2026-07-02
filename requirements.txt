@@ -7,3 +7,4 @@ msal
 requests
 python-docx
 streamlit
+flask
