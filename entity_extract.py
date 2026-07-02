@@ -399,47 +399,32 @@ class DocumentReviewer:
 
     # ---- Step 1a (per-segment identification) ----
 
-    def _identify_segment(self, segment: str,
-                          segment_index: int | None = None
-                          ) -> tuple[set[str], list[tuple[str, ...]]]:
-        """Ask the LLM to list source-language terms in this segment.
+    def _identify_segment(self, segment: str, segment_index: int | None = None) -> tuple[set[str], list[tuple[str, ...]]]:
+        """LLM step 1a. Returns (keep_terms, translate_groups); each group tuples variants of one entity, canonical first."""
+        _, keep, groups = self._identify_segment_with_raw(segment, segment_index)
+        return keep, groups
 
-        Returns (keep_terms, translate_groups):
-        - keep_terms: flat set of source-language strings to preserve verbatim.
-        - translate_groups: list of variant tuples. 
-          Each tuple groups multiple source forms that refer to the same entity (canonical form first);
-          they will share one target translation in the final glossary.
-        """
-        prompt = IDENTIFY_PROMPT.format(
-            source_lang=self.source_lang,
-            target_lang=self.target_lang,
-            text=segment,
-        )
+    def identify_segment_debug(self, segment: str) -> tuple[str, set[str], list[tuple[str, ...]]]:
+        """Same as `_identify_segment` but also returns the raw LLM text. For notebook prompt iteration."""
+        return self._identify_segment_with_raw(segment, segment_index=None)
+
+    def _identify_segment_with_raw(self, segment: str, segment_index: int | None) -> tuple[str, set[str], list[tuple[str, ...]]]:
+        prompt = IDENTIFY_PROMPT.format(source_lang=self.source_lang, target_lang=self.target_lang, text=segment)
         options = {"temperature": 0.1, "num_predict": 512}
         if self.seed is not None:
             options["seed"] = self.seed
-        resp = ollama.chat(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            options=options,
-        )
+        resp = ollama.chat(model=self.model, messages=[{"role": "user", "content": prompt}], options=options)
         text = resp["message"]["content"].strip()
 
-        keep, translate_groups = self._parse_keep_term_lines(text)
-
+        keep, groups = self._parse_keep_term_lines(text)
         if segment_index is not None:
-            self._snap.step1a_segment(segment_index, segment, prompt, text,
-                                      keep, translate_groups)
+            self._snap.step1a_segment(segment_index, segment, prompt, text, keep, groups)
 
-        # If we parsed nothing, surface what the LLM actually returned so the user can diagnose prompt issues.
-        # Pure-identification prompts can fail on translation-tuned models like translategemma.
-        # We need to use a general-purpose review_model if this fires often.
-        if not keep and not translate_groups:
+        if not keep and not groups:
             preview = text if len(text) <= 400 else text[:400] + "...[truncated]"
-            print(f"  [entity_extract] WARN: segment produced 0 parsed terms. "
-                  f"Raw LLM response:\n---\n{preview}\n---")
+            print(f"  [entity_extract] WARN: segment produced 0 parsed terms. Raw LLM response:\n---\n{preview}\n---")
 
-        return keep, translate_groups
+        return text, keep, groups
 
     # Common abbreviations whose trailing "." is NOT a sentence boundary.
     # Stripped before the "intra-sentence period" prose check so legal citations like "Cajar vs. Colombia" survive.
@@ -458,8 +443,9 @@ class DocumentReviewer:
         s = line.strip()
         if not s or len(s) < 2:
             return False
-        # Sentence-ending punctuation suggests prose, not a term
-        if s.endswith(("?", "!", ".")):
+        # Sentence-ending punctuation suggests prose not a term
+        # Strip trailing brackets/quotes so wrapped forms like "(...sentence.)" or "...sentence.\"" are still caught.
+        if s.rstrip(")]}»›\"'").endswith(("?", "!", ".")):
             return False
         # A ". " in the middle suggests multi-sentence prose 
         # But strip common abbreviations first so "Cajar vs. Colombia" doesn't trigger it
@@ -507,20 +493,22 @@ class DocumentReviewer:
                         for v in s.split("|") if v.strip()]
         out: list[str] = []
         seen_lower: set[str] = set()
-        # Drop reserved prompt prefix tokens if the LLM accidentally echoes them as variants 
-        # (e.g. "KEEP: GLOBAL WITNESS: KEEP")
-        reserved = {"keep", "term", "translate", "prefer"}
+        # Reserved prompt tokens the LLM sometimes echoes as variants ("KEEP:", etc.)
+        reserved = {"keep", "term", "translate", "prefer", "pairing rule", "important pairing behavior"}
         for rv in raw_variants:
             for sub in DocumentReviewer._split_parenthetical_variants(rv):
-                # Strip stray surrounding quotes and trailing punctuation the LLM sometimes leaves on a variant
                 sub = sub.strip().strip('"').strip("'").strip().rstrip(":.,;")
                 if not sub:
                     continue
+                # Strip a leading reserved prefix: "PAIRING RULE: Corte..." → "Corte..."
+                if ":" in sub:
+                    prefix, _, rest = sub.partition(":")
+                    if prefix.strip().lower() in reserved and rest.strip():
+                        sub = rest.strip()
                 low = sub.lower()
                 if low in reserved or low in seen_lower:
                     continue
-                # Drop variants that look like prose, not entity names
-                if len(sub.split()) > 18:
+                if len(sub.split()) > 18:  # too long; looks like prose
                     continue
                 out.append(sub)
                 seen_lower.add(low)

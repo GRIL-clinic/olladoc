@@ -58,7 +58,7 @@ For each term found, output exactly ONE line:
 - One term per line. No explanation. If nothing applies, output nothing.
 - Skip common words and unspecialized vocabulary.
 
-PAIRING RULE — read this carefully:
+Important pairing behavior:
 
 Whenever the passage introduces an abbreviation with its expansion — commonly as "<expansion> (<abbreviation>)" — \
 you MUST list BOTH on the SAME line, separated by | , with the FULLEST form first. \
