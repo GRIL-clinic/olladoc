@@ -48,10 +48,10 @@ python batch_translate.py INPUT_DIR OUTPUT_DIR [--source-lang X] [--target-lang 
 **Web UI:**
 
 ```
-streamlit run app.py
+python app_flask.py
 ```
 
-> Note: `app.py` does not yet support the two-phase pipeline.
+Then open http://localhost:5001. Supports both one-shot and two-phase workflows (with an in-app glossary editor between phases), plus Ollama controls: start/stop the server, pick or pull a model, and view logs.
 
 Defaults: Spanish → English, model `translategemma`.
 
@@ -70,7 +70,7 @@ Each input produces up to four sibling docx files — `_tables`, `_footnotes`, `
 - [`translate.py`](translate.py) — `Translator` + `DocumentTranslator` + `translate_document` entry point (Phase 2)
 - [`batch_translate.py`](batch_translate.py) — folder batcher
 - [`sanity_check.py`](sanity_check.py) — post-translation structural diff
-- [`app.py`](app.py) — Streamlit UI
+- [`app_flask.py`](app_flask.py) — Flask web UI backend (paired with [`templates/`](templates/) + [`static/`](static/))
 
 ## Testing and iteration
 
