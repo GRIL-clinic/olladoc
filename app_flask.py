@@ -24,10 +24,13 @@ import requests
 from flask import Flask, jsonify, render_template, request, send_file
 
 import translate
+from glossary import DomainGlossary
 from translate import translate_document
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024   # 200 MB uploads
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 # ---- Ollama integration ---------------------------------------------------
 
@@ -205,7 +208,7 @@ def _pull_worker(model_name):
                 if total:
                     pct = int(completed / total * 100)
                     with _PULL["lock"]:
-                        _PULL["log"] = f"{status} — {pct}%"
+                        _PULL["log"] = f"{status} {pct}%"
                 else:
                     with _PULL["lock"]:
                         _PULL["log"] = status
@@ -236,20 +239,28 @@ class Job:
     tmp_ctx: tempfile.TemporaryDirectory
     lock: threading.Lock = field(default_factory=threading.Lock)
     log: list[str] = field(default_factory=list)
-    status: str = "idle"       # running_phase1 | awaiting_edit | running_phase2 | done | error
+    status: str = "idle"       # running_phase1 | awaiting_edit | running_phase2 | done | cancelled | error
     done_count: int = 0
     total_count: int = 0
     outputs: list[str] = field(default_factory=list)   # absolute paths to output files
     failures: list[tuple[str, str]] = field(default_factory=list)
     totals: dict[str, int] = field(default_factory=lambda: {"blocks": 0, "chars": 0})
     saved_paths: list[str] = field(default_factory=list)
+    cancel_requested: bool = False
 
 
 JOBS: dict[str, Job] = {}
 
 
+class JobCancelled(Exception):
+    """Raised from inside a worker to abort translate_document when the user cancels."""
+
+
 class _LineStream(io.TextIOBase):
-    """Captures writes line-by-line into a thread-safe list on the Job."""
+    """Captures writes line-by-line into a thread-safe list on the Job.
+
+    Doubles as the cancellation point: the translation engine prints a progress line per chunk through this stream, so raising here aborts translate_document at chunk granularity without the engine needing any cancel hook of its own.
+    """
 
     def __init__(self, job: Job):
         super().__init__()
@@ -257,6 +268,8 @@ class _LineStream(io.TextIOBase):
         self._job = job
 
     def write(self, s):
+        if self._job.cancel_requested:
+            raise JobCancelled()
         if not s:
             return 0
         if isinstance(s, (bytes, bytearray)):
@@ -293,7 +306,11 @@ def _run_phase(job: Job, phases: tuple[str, ...]):
     is_phase1_only = phases == ("build_glossary",)
     out_dir = Path(s.get("output_dir") or "translated").expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
+    cancelled = False
     for i, p in enumerate(job.payloads):
+        if job.cancel_requested:
+            cancelled = True
+            break
         print(f"\n=== [{i+1}/{len(job.payloads)}] {p.name} ===", file=stream)
         suffix = Path(p.name).suffix.lower()
         # First time: materialize the upload to temp and pick the output path.
@@ -344,13 +361,32 @@ def _run_phase(job: Job, phases: tuple[str, ...]):
                                 print(f"  Sanity check: {n} issue(s)", file=stream)
                     except Exception as e:
                         print(f"  Sanity check failed: {e}", file=stream)
+        except JobCancelled:
+            cancelled = True
+            break
         except Exception as e:
+            if job.cancel_requested:
+                # A JobCancelled raised mid-engine can surface wrapped in another exception; treat it as the cancel it is.
+                cancelled = True
+                break
             print(f"  Error: {e}", file=stream)
             print(traceback.format_exc(), file=stream)
             with job.lock:
                 job.failures.append((p.name, str(e)))
         with job.lock:
             job.done_count = i + 1
+    if cancelled:
+        job.cancel_requested = False   # lets our own writes below reach the log instead of re-raising
+        print("\n=== Cancelled ===", file=stream)
+        with job.lock:
+            job.saved_paths = list(job.outputs)   # anything fully translated before the cancel is still usable
+        stream.flush()
+        try:
+            job.tmp_ctx.cleanup()
+        except Exception:
+            pass
+        job.status = "cancelled"
+        return
     # After the final phase, expose the glossary paths as downloadable outputs alongside the docx files.
     if not is_phase1_only:
         with job.lock:
@@ -513,11 +549,34 @@ def continue_to_phase2(job_id):
 def cancel(job_id):
     job = JOBS.pop(job_id, None)
     if job:
+        job.cancel_requested = True   # in case a worker thread is still running, make it bail at the next chunk
         try:
             job.tmp_ctx.cleanup()
         except Exception:
             pass
     return jsonify({"ok": True})
+
+
+@app.post("/api/cancel_job/<job_id>")
+def cancel_job(job_id):
+    """Request cancellation of a running job. Unlike /api/cancel this keeps the job around so the UI can poll until the worker acknowledges (status becomes 'cancelled')."""
+    r = _job_or_404(job_id)
+    if isinstance(r, tuple):
+        return r
+    job = r
+    if job.status not in ("running", "running_phase1", "running_phase2"):
+        return jsonify({"error": f"cannot cancel from status {job.status}"}), 400
+    job.cancel_requested = True
+    with job.lock:
+        job.log.append("Cancel requested, stopping after the current chunk…")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/glossary/validate")
+def validate_glossary():
+    """Validate glossary text without saving it. Body: {"content": str} → {"issues": [{line, level, message}]}."""
+    body = request.get_json(silent=True) or {}
+    return jsonify({"issues": DomainGlossary.validate_text(body.get("content", ""))})
 
 
 @app.get("/api/download/<job_id>/<path:name>")

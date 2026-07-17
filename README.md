@@ -98,7 +98,7 @@ See [Using the CLI](#using-the-cli) for flags, batch mode, and two-phase workflo
 
 **Ollama status bar (top).** Shows whether `http://localhost:11434` is reachable. Start / Stop control an Ollama process olladoc manages itself; Stop is only enabled for processes it launched. "View logs" tails either olladoc's log or `~/.ollama/logs/server.log`. "Pull a new model" downloads from [ollama.com/library](https://ollama.com/library) with a live log and cancel button.
 
-**Upload and settings.** Drag-and-drop or browse (200 MB per file). Source and target language pickers (default Spanish to English). Model dropdown lists installed Ollama models.
+**Upload and settings.** Drag-and-drop or browse, one file at a time (up to 200 MB). Source and target language pickers (default Spanish to English). Model dropdown lists installed Ollama models.
 
 **Workflow modes.**
 - One-shot: Phase 1 (glossary building) straight into Phase 2 (translation) without stopping.

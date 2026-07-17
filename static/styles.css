@@ -107,7 +107,16 @@ html, body {
   justify-content: space-between;
   gap: 0.5rem;
 }
-.file-list .filesize { color: var(--text-muted); font-size: 0.8rem; }
+.file-list .filesize { color: var(--text-muted); font-size: 0.8rem; margin-left: auto; }
+.file-list .file-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0 0.2rem;
+}
+.file-list .file-remove:hover { color: var(--primary); }
 
 /* --- Layout helpers -------------------------------------------------- */
 .two-col {
@@ -406,9 +415,28 @@ html, body {
   display: flex;
   gap: 0.5rem;
 }
+.ollama-bar.attn {
+  animation: barPulse 0.9s ease 2;
+  border-radius: var(--radius-sm);
+}
+@keyframes barPulse {
+  50% { background: rgba(255, 75, 75, 0.09); }
+}
 .ollama-actions button {
   min-width: 4.5rem;
 }
+
+/* --- Missing-model banner -------------------------------------------- */
+.model-missing {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0.5rem 0 0;
+}
+/* display:flex above would override the hidden attribute's display:none, so restate it. */
+.model-missing[hidden] { display: none; }
 
 /* --- Pull expander --------------------------------------------------- */
 .pull-row {
@@ -424,6 +452,96 @@ html, body {
   max-height: 8rem;
   margin-bottom: 0.5rem;
 }
+
+/* --- Form gating (disabled until Ollama is running) ------------------- */
+.form-fields {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.form-fields:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* --- Field hints ------------------------------------------------------ */
+.field-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin: -0.15rem 0 0.45rem;
+  line-height: 1.4;
+}
+.label-muted {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* --- Glossary validation issues -------------------------------------- */
+.gedit-issues {
+  margin-top: 0.4rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.gedit-issues .issue-error { color: #b00020; }
+.gedit-issues .issue-warning { color: #856404; }
+
+/* --- Tour ------------------------------------------------------------- */
+#secLanguages { margin-top: 2.25rem; }
+#secLanguages .field-label { margin-top: 0; }
+
+.tour-highlight {
+  box-shadow: 0 0 0 6px var(--bg), 0 0 0 8px rgba(255, 75, 75, 0.4), 0 0 18px 8px rgba(255, 75, 75, 0.12);
+  border-radius: var(--radius-sm);
+  transition: box-shadow 0.15s ease;
+}
+.tour-pop {
+  position: fixed;
+  z-index: 100;
+  max-width: 20rem;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
+  padding: 0.9rem 1rem;
+}
+.tour-pop-title {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.tour-pop-text {
+  font-size: 0.9rem;
+  color: var(--text);
+}
+.tour-pop-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+}
+.tour-pop-count {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-right: auto;
+}
+.tour-pop-actions .btn-secondary,
+.tour-pop-actions .btn-tertiary {
+  padding: 0.25rem 0.7rem;
+  font-size: 0.85rem;
+}
+
+/* --- Footer ----------------------------------------------------------- */
+.footer {
+  margin-top: 3.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+.footer a {
+  color: inherit;
+}
+.footer a:hover { color: var(--text); }
 
 /* --- Dialog ---------------------------------------------------------- */
 .dialog {
@@ -446,5 +564,13 @@ html, body {
 }
 .dialog-header .dialog-title { margin: 0; }
 .dialog-actions { display: flex; justify-content: flex-end; margin-top: 1rem; }
+/* Inline reference to a button/control in help text. */
+.ui-ref {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.dialog-body ol { margin: 0.5rem 0 0; padding-left: 1.4rem; }
+.dialog-body ol li { margin: 0.4rem 0; }
+.dialog-body h3 { margin: 0.75rem 0 0.25rem; font-size: 1.05rem; }
 .dialog-wide { max-width: 52rem; }
 .log-tall { max-height: 30rem; }

@@ -129,6 +129,48 @@ class DomainGlossary:
                 entries.append(GlossaryEntry(variants, tgt, kind="prefer"))
         return entries
 
+    @staticmethod
+    def validate_text(text: str) -> list[dict]:
+        """Check glossary text line-by-line and return issues that parse_lines would silently ignore or misread.
+
+        Returns a list of {"line": 1-based line number, "level": "error"|"warning", "message": str}.
+        "error" means the line will be dropped entirely by parse_lines; "warning" means it parses but probably not the way the author intended.
+        Blank lines and # comments are fine and produce no issues.
+        """
+        issues = []
+        examples = {"TRANSLATE": "TRANSLATE: source → target", "KEEP": "KEEP: term", "PREFER": "PREFER: source → target"}
+        for n, raw in enumerate(text.splitlines(), start=1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            prefix = re.match(r'^(TRANSLATE|KEEP|PREFER):\s*(.*)$', line, re.IGNORECASE)
+            if not prefix:
+                issues.append({"line": n, "level": "error", "message": "Not a recognized rule. Lines must start with TRANSLATE:, KEEP:, or PREFER:"})
+                continue
+            kind = prefix.group(1).upper()
+            rest = prefix.group(2).strip()
+            ascii_arrow = "->" in line and "→" not in line
+            if not rest:
+                issues.append({"line": n, "level": "error", "message": f"{kind} has nothing after the colon: {examples[kind]}"})
+                continue
+            if rest.startswith("→"):
+                issues.append({"line": n, "level": "error", "message": "Missing source term before the arrow"})
+                continue
+            source, target = (s.strip() for s in rest.split("→", 1)) if "→" in rest else (rest, None)
+            if kind == "TRANSLATE" and not target:
+                if ascii_arrow:
+                    issues.append({"line": n, "level": "error", "message": "Use the arrow character → between source and target ('->' is not recognized)"})
+                else:
+                    issues.append({"line": n, "level": "error", "message": "TRANSLATE needs a target: TRANSLATE: source → target"})
+                continue
+            if kind == "KEEP" and target:
+                issues.append({"line": n, "level": "warning", "message": "KEEP lines don't take '→ target'. The term is kept verbatim and the target part is ignored"})
+            if kind == "PREFER" and not target and ascii_arrow:
+                issues.append({"line": n, "level": "warning", "message": "Use the arrow character → before the target ('->' is not recognized, so this whole line is treated as the source term)"})
+            if not DomainGlossary._split_variants(source):
+                issues.append({"line": n, "level": "error", "message": "Missing source term before the arrow"})
+        return issues
+
     def save(self, path: str | Path) -> None:
         """Write the glossary to a human-readable TRANSLATE/KEEP/PREFER file.
 

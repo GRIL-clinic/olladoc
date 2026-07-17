@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <title>olladoc</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=20260720">
 </head>
 <body>
   <main class="page">
@@ -12,7 +12,8 @@
       <h1 class="title">olladoc</h1>
       <button id="aboutBtn" class="btn-tertiary" title="About" type="button">✨</button>
     </div>
-    <p class="caption">Local <code>.pdf</code> / <code>.docx</code> translation via Ollama</p>
+    <p class="caption">Local (private) <code>.pdf</code> / <code>.docx</code> translation via Ollama</p>
+    <p class="caption">New here? <a href="#" id="tourLink">Take a quick tour</a></p>
 
     <!-- ======================== OLLAMA STATUS BAR ======================= -->
     <div class="ollama-bar">
@@ -31,53 +32,61 @@
     <hr class="divider" />
 
     <!-- ============================= FORM ============================== -->
+    <p class="field-hint gate-hint" id="ollamaGateHint" hidden>Ollama is not running. Start it above to enable translation.</p>
     <form id="form" enctype="multipart/form-data">
+      <fieldset id="formFields" class="form-fields" disabled>
       <!-- Documents ---------------------------------------------------- -->
-      <label class="field-label">Documents</label>
-      <label class="dropzone" id="dropzone">
-        <input type="file" name="files" id="files" multiple
-               accept=".pdf,.docx" hidden />
-        <div class="dropzone-inner">
-          <div class="dropzone-icon">☁️</div>
-          <div class="dropzone-text">
-            <strong>Drag and drop files here</strong><br>
-            <span class="dropzone-hint">Limit 200 MB per file · PDF, DOCX</span>
+      <div id="secDocument">
+        <label class="field-label">Document</label>
+        <label class="dropzone" id="dropzone">
+          <input type="file" name="files" id="files" accept=".pdf,.docx" hidden />
+          <div class="dropzone-inner">
+            <div class="dropzone-icon">☁️</div>
+            <div class="dropzone-text">
+              <strong>Drag and drop a file here</strong><br>
+              <span class="dropzone-hint">One PDF or DOCX · up to 200 MB</span>
+            </div>
+            <span class="btn-secondary">Browse files</span>
           </div>
-          <span class="btn-secondary">Browse files</span>
-        </div>
-      </label>
-      <ul class="file-list" id="fileList"></ul>
+        </label>
+        <ul class="file-list" id="fileList"></ul>
+      </div>
 
       <!-- Languages ---------------------------------------------------- -->
-      <div class="two-col">
-        <div>
-          <label class="field-label" for="sourceLang">Source language</label>
-          <select id="sourceLang" name="source_lang" class="select"></select>
-        </div>
-        <div>
-          <label class="field-label" for="targetLang">Target language</label>
-          <select id="targetLang" name="target_lang" class="select"></select>
+      <div id="secLanguages" title="Any pair can work, but Spanish ↔ English is the most thoroughly tested.">
+        <div class="two-col">
+          <div>
+            <label class="field-label" for="sourceLang">Source language</label>
+            <select id="sourceLang" name="source_lang" class="select"></select>
+          </div>
+          <div>
+            <label class="field-label" for="targetLang">Target language</label>
+            <select id="targetLang" name="target_lang" class="select"></select>
+          </div>
         </div>
       </div>
 
       <!-- Model — dropdown when Ollama is running, text input otherwise. -->
+      <div id="secModel" title="The AI model that does the translating. The default, translategemma, was built specifically for translation.">
       <label class="field-label" for="model">Model</label>
       <select id="modelSelect" name="model" class="select" hidden></select>
-      <input type="text" id="modelInput" name="model" class="text-input"
-             value="translategemma" />
+      <input type="text" id="modelInput" name="model" class="text-input" value="translategemma" />
+      <div id="modelMissing" class="banner warning model-missing" hidden>
+        <span>The default translation model, <code>translategemma</code>, is not installed yet (one-time download, a few GB).</span>
+        <button id="getModelBtn" class="btn-secondary" type="button">Download translategemma</button>
+      </div>
 
       <!-- Pull a new model ------------------------------------------------ -->
       <details class="expander" id="pullExpander">
-        <summary>Pull a new model</summary>
+        <summary>Pull a new model <span class="label-muted">(optional)</span></summary>
         <div class="expander-body">
           <p class="caption">
-            Browse all models at
-            <a href="https://ollama.com/library" target="_blank">ollama.com/library</a>.
-            Any general-purpose model can translate; language support varies.
+            A model is the AI that does the translating. The default one (<code>translategemma</code>) was built specifically for translation, so most people never need to change it.
+            To experiment, pull (download) another model from <a href="https://ollama.com/library" target="_blank">ollama.com/library</a>.
+            Most general-purpose models can translate too, though quality and language coverage vary. Keep in mind that models are big downloads, usually several GB.
           </p>
           <div class="pull-row">
-            <input type="text" id="pullName" class="text-input"
-                   placeholder="e.g. translategemma" />
+            <input type="text" id="pullName" class="text-input" placeholder="e.g. translategemma" />
             <button id="pullBtn" class="btn-secondary" type="button" disabled>Pull</button>
           </div>
           <div id="pullProgress" class="pull-progress" hidden>
@@ -86,18 +95,21 @@
           </div>
         </div>
       </details>
+      </div>
 
       <!-- Workflow ----------------------------------------------------- -->
-      <label class="field-label">Workflow</label>
-      <div class="radio-group">
-        <label class="radio">
-          <input type="radio" name="workflow" value="oneshot" checked />
-          <span>One-shot</span>
-        </label>
-        <label class="radio">
-          <input type="radio" name="workflow" value="twophase" />
-          <span>Two-phase (edit glossary between)</span>
-        </label>
+      <div id="secWorkflow" title="One-shot builds the glossary and translates in a single run. Two-phase pauses after the glossary is built, so you can review and edit it before anything is translated.">
+        <label class="field-label">Workflow</label>
+        <div class="radio-group">
+          <label class="radio">
+            <input type="radio" name="workflow" value="oneshot" checked />
+            <span>One-shot (direct translation)</span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="workflow" value="twophase" />
+            <span>Two-phase (edit glossary between)</span>
+          </label>
+        </div>
       </div>
 
       <!-- Advanced ----------------------------------------------------- -->
@@ -116,13 +128,15 @@
       </details>
 
       <!-- Output folder ------------------------------------------------ -->
-      <label class="field-label" for="outputDir">Output folder</label>
-      <input type="text" id="outputDir" name="output_dir" class="text-input" />
+      <div id="secOutput">
+        <label class="field-label" for="outputDir">Output folder</label>
+        <p class="field-hint">Each document can produce several files here: the translation, its glossary, and separate files for tables, footnotes, and comments.</p>
+        <input type="text" id="outputDir" name="output_dir" class="text-input" />
+      </div>
 
       <!-- Submit ------------------------------------------------------- -->
-      <button id="submitBtn" type="submit" class="btn-primary" disabled>
-        Translate
-      </button>
+      <button id="submitBtn" type="submit" class="btn-primary" disabled>Translate</button>
+      </fieldset>
     </form>
 
     <!-- =========================== PROGRESS ============================ -->
@@ -131,6 +145,7 @@
       <div class="progressbar-wrap">
         <div class="progressbar"><div id="progressFill" class="progressbar-fill"></div></div>
         <div id="progressText" class="progress-text">0 / 0</div>
+        <button id="cancelJobBtn" class="btn-secondary" type="button">Cancel</button>
       </div>
       <pre id="log" class="log"></pre>
     </section>
@@ -139,9 +154,7 @@
     <section id="edit" class="section" hidden>
       <h2 class="section-title">Review glossaries</h2>
       <p class="caption">
-        Phase 1 finished. Review the terminology rules below (fix wrong translations,
-        remove noise, change TRANSLATE→KEEP, etc.), then click
-        <strong>Continue to Phase 2</strong> to translate.
+        Phase 1 finished. Review the terminology rules below (fix wrong translations, remove noise, change TRANSLATE→KEEP, etc.), then click <span class="ui-ref">Continue to Phase 2</span> to translate.
       </p>
       <div id="editList"></div>
       <div class="edit-actions">
@@ -177,28 +190,43 @@
     <dialog id="aboutDialog" class="dialog">
       <div class="dialog-body">
         <h2 class="dialog-title">About olladoc</h2>
-        <p><strong>olladoc</strong> translates <code>.pdf</code> and <code>.docx</code>
-          files locally; no data leaves your machine. Powered by
-          <a href="https://ollama.com" target="_blank">Ollama</a> and
-          Google's <a href="https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/" target="_blank">TranslateGemma</a>
-          by default; any Ollama-compatible model works.</p>
+        <p><strong>olladoc</strong> translates PDF and Word documents using large language models that run right on your computer. Your files are never uploaded anywhere, so even sensitive documents are safe to translate.</p>
+        <p>The translation keeps as much of the original structure as it can, including headings, lists, and text formatting. Tables, footnotes, and comments are translated separately and saved as their own files.</p>
+        <p>olladoc is built on two free tools: <a href="https://ollama.com" target="_blank">Ollama</a>, which runs the models, and Google's <a href="https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/" target="_blank">TranslateGemma</a>, a model made specifically for translation and used by default.</p>
         <hr />
-        <h3>New to Ollama?</h3>
+        <h3>Getting started</h3>
         <ol>
-          <li>Install Ollama: <code>brew install ollama</code> — or download from
-            <a href="https://ollama.com/download" target="_blank">ollama.com/download</a>.</li>
-          <li>Pull the default translation model:
-            <code>ollama pull translategemma</code></li>
-          <li>Start Ollama (menubar app or <code>ollama serve</code>).</li>
-          <li>Upload files, pick source/target languages, click <strong>Translate</strong>.</li>
+          <li>Install Ollama from <a href="https://ollama.com/download" target="_blank">ollama.com/download</a> (or with <code>brew install ollama</code>).</li>
+          <li>Make sure Ollama is running. The status bar at the top of this page will show a green "running". If Ollama is not running, click <span class="ui-ref">Start</span>.</li>
+          <li>If <code>translategemma</code> is not installed yet, click <span class="ui-ref">Download translategemma</span>. This is a one-time download of a few GB.</li>
+          <li>Upload a document, pick your source and target languages, and click <span class="ui-ref">Translate</span>.</li>
         </ol>
+        <hr />
+        <p class="caption">Developed by the Global Rights Innovation Lab Clinic, UC Berkeley. Released under the BSD 3-Clause license.</p>
         <form method="dialog" class="dialog-actions">
           <button class="btn-secondary" type="submit">Close</button>
         </form>
       </div>
     </dialog>
+
+    <!-- ============================ TOUR =============================== -->
+    <div id="tourPop" class="tour-pop" hidden>
+      <div id="tourPopTitle" class="tour-pop-title"></div>
+      <div id="tourPopText" class="tour-pop-text"></div>
+      <div class="tour-pop-actions">
+        <span id="tourPopCount" class="tour-pop-count"></span>
+        <button id="tourPrevBtn" class="btn-secondary" type="button">Back</button>
+        <button id="tourNextBtn" class="btn-secondary" type="button">Next</button>
+        <button id="tourCloseBtn" class="btn-tertiary" type="button" title="End tour">✕</button>
+      </div>
+    </div>
+
+    <!-- ============================ FOOTER ============================= -->
+    <footer class="footer">
+      <a href="#" id="footerAboutLink">About</a> · Developed by the Global Rights Innovation Lab Clinic, UC Berkeley · BSD 3-Clause license
+    </footer>
   </main>
 
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=20260720"></script>
 </body>
 </html>

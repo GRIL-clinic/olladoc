@@ -7,17 +7,25 @@
 //   running_phase2   — poll /api/status, show progress panel
 //   done             — render results panel + download links
 
+// TranslateGemma's trained-and-evaluated languages (the WMT24++ set, dialect variants collapsed), defaults first.
 const LANGS = [
-  "Spanish", "English", "French", "German", "Italian", "Portuguese",
-  "Dutch", "Russian", "Chinese", "Japanese", "Korean", "Arabic",
-  "Turkish", "Polish", "Ukrainian", "Vietnamese", "Thai", "Indonesian",
-  "Hindi", "Bengali", "Urdu",
+  "Spanish", "English",
+  "Arabic", "Bengali", "Bulgarian", "Catalan", "Chinese", "Croatian", "Czech",
+  "Danish", "Dutch", "Estonian", "Filipino", "Finnish", "French", "German",
+  "Greek", "Gujarati", "Hebrew", "Hindi", "Hungarian", "Icelandic",
+  "Indonesian", "Italian", "Japanese", "Kannada", "Korean", "Latvian",
+  "Lithuanian", "Malayalam", "Marathi", "Norwegian", "Persian", "Polish",
+  "Portuguese", "Punjabi", "Romanian", "Russian", "Serbian", "Slovak",
+  "Slovenian", "Swahili", "Swedish", "Tamil", "Telugu", "Thai", "Turkish",
+  "Ukrainian", "Urdu", "Vietnamese", "Zulu",
 ];
 
 // ---- Elements ------------------------------------------------------------
 const $ = (id) => document.getElementById(id);
 const els = {
   form: $("form"),
+  formFields: $("formFields"),
+  ollamaGateHint: $("ollamaGateHint"),
   dropzone: $("dropzone"),
   filesInput: $("files"),
   fileList: $("fileList"),
@@ -43,6 +51,17 @@ const els = {
   resultsBody: $("resultsBody"),
   aboutBtn: $("aboutBtn"),
   aboutDialog: $("aboutDialog"),
+  footerAboutLink: $("footerAboutLink"),
+  cancelJobBtn: $("cancelJobBtn"),
+  // Tour
+  tourLink: $("tourLink"),
+  tourPop: $("tourPop"),
+  tourPopTitle: $("tourPopTitle"),
+  tourPopText: $("tourPopText"),
+  tourPopCount: $("tourPopCount"),
+  tourPrevBtn: $("tourPrevBtn"),
+  tourNextBtn: $("tourNextBtn"),
+  tourCloseBtn: $("tourCloseBtn"),
   // Ollama controls
   ollamaStatusText: $("ollamaStatusText"),
   viewLogsLink: $("viewLogsLink"),
@@ -53,6 +72,8 @@ const els = {
   logsPath: $("logsPath"),
   refreshLogsBtn: $("refreshLogsBtn"),
   // Pull model
+  modelMissing: $("modelMissing"),
+  getModelBtn: $("getModelBtn"),
   pullName: $("pullName"),
   pullBtn: $("pullBtn"),
   pullProgress: $("pullProgress"),
@@ -81,21 +102,57 @@ function setDefaultOutputDir() {
 }
 
 // ---- File input handling -------------------------------------------------
+// Single-file app: dropping or browsing a new file replaces the current selection, and the list row has a remove button. selectedFiles is the source of truth (0 or 1 entries); the hidden input is kept in sync so form submission sees the same file.
+let selectedFiles = [];
+
+function syncFileInput() {
+  const dt = new DataTransfer();
+  for (const f of selectedFiles) dt.items.add(f);
+  els.filesInput.files = dt.files;
+}
+
+function addFiles(fileList) {
+  if (els.formFields.disabled) return;
+  // Single-file app: the newest valid file replaces the current selection.
+  for (const f of Array.from(fileList || [])) {
+    if (!/\.(pdf|docx)$/i.test(f.name)) continue;
+    selectedFiles = [f];
+    break;
+  }
+  syncFileInput();
+  renderFileList();
+}
+
+function removeFile(idx) {
+  selectedFiles.splice(idx, 1);
+  syncFileInput();
+  renderFileList();
+}
+
 function renderFileList() {
-  const files = Array.from(els.filesInput.files || []);
   els.fileList.innerHTML = "";
-  for (const f of files) {
+  selectedFiles.forEach((f, i) => {
     const li = document.createElement("li");
     const name = document.createElement("span");
     name.textContent = f.name;
     const size = document.createElement("span");
     size.className = "filesize";
     size.textContent = fmtBytes(f.size);
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "file-remove";
+    rm.title = "Remove";
+    rm.textContent = "✕";
+    rm.addEventListener("click", (e) => {
+      e.preventDefault();
+      removeFile(i);
+    });
     li.appendChild(name);
     li.appendChild(size);
+    li.appendChild(rm);
     els.fileList.appendChild(li);
-  }
-  els.submitBtn.disabled = files.length === 0;
+  });
+  els.submitBtn.disabled = selectedFiles.length === 0;
 }
 function fmtBytes(n) {
   if (n < 1024) return `${n} B`;
@@ -104,7 +161,7 @@ function fmtBytes(n) {
 }
 
 // Drag-and-drop wiring.
-els.filesInput.addEventListener("change", renderFileList);
+els.filesInput.addEventListener("change", () => addFiles(els.filesInput.files));
 ["dragenter", "dragover"].forEach((evt) =>
   els.dropzone.addEventListener(evt, (e) => {
     e.preventDefault();
@@ -118,11 +175,18 @@ els.filesInput.addEventListener("change", renderFileList);
   })
 );
 els.dropzone.addEventListener("drop", (e) => {
-  const dt = e.dataTransfer;
-  if (dt && dt.files) {
-    els.filesInput.files = dt.files;
-    renderFileList();
+  if (e.dataTransfer && e.dataTransfer.files) {
+    addFiles(e.dataTransfer.files);
   }
+});
+
+// Clicking the grayed-out form (the disabled fieldset is click-transparent, so the form catches it) explains the gate and points at the Ollama bar.
+els.form.addEventListener("click", () => {
+  if (!els.formFields.disabled) return;
+  const bar = document.querySelector(".ollama-bar");
+  bar.classList.remove("attn");
+  void bar.offsetWidth;   // restart the animation on repeat clicks
+  bar.classList.add("attn");
 });
 
 // ---- Submit --------------------------------------------------------------
@@ -149,6 +213,7 @@ els.form.addEventListener("submit", async (e) => {
             els.form.querySelector('[name=timestamp]').checked ? "true" : "false");
   els.submitBtn.disabled = true;
   hideAll();
+  resetCancelJobBtn();
   els.progress.hidden = false;
   els.progressTitle.textContent = "Progress";
   els.log.textContent = "";
@@ -197,18 +262,64 @@ function applyStatus(s) {
   els.log.scrollTop = els.log.scrollHeight;
 
   if (s.status === "running_phase1") {
-    els.progressTitle.textContent = "Progress — Phase 1: building glossary";
+    els.progressTitle.textContent = "Progress · Phase 1: building glossary";
   } else if (s.status === "running_phase2") {
-    els.progressTitle.textContent = "Progress — Phase 2: translating";
+    els.progressTitle.textContent = "Progress · Phase 2: translating";
   } else if (s.status === "running") {
-    els.progressTitle.textContent = "Progress — building glossary + translating";
+    els.progressTitle.textContent = "Progress · building glossary + translating";
   } else if (s.status === "awaiting_edit") {
     stopPolling();
     renderEditUI(s);
   } else if (s.status === "done") {
     stopPolling();
     renderResults(s);
+  } else if (s.status === "cancelled") {
+    stopPolling();
+    renderCancelled(s);
   }
+}
+
+// ---- Cancel a running translation ---------------------------------------
+els.cancelJobBtn.addEventListener("click", async () => {
+  if (!currentJobId) return;
+  els.cancelJobBtn.disabled = true;
+  els.cancelJobBtn.textContent = "Cancelling…";
+  try {
+    await fetch(`/api/cancel_job/${currentJobId}`, { method: "POST" });
+  } catch (err) { /* polling will surface the state either way */ }
+});
+function resetCancelJobBtn() {
+  els.cancelJobBtn.disabled = false;
+  els.cancelJobBtn.textContent = "Cancel";
+}
+
+function renderCancelled(s) {
+  els.progress.hidden = true;
+  els.edit.hidden = true;
+  els.results.hidden = false;
+  els.resultsBanner.innerHTML = "";
+  els.resultsBody.innerHTML = "";
+  const banner = document.createElement("div");
+  banner.className = "banner warning";
+  banner.textContent = s.saved_paths.length
+    ? `Cancelled. ${s.saved_paths.length} file(s) finished before cancelling were saved.`
+    : "Cancelled. No files were completed.";
+  els.resultsBanner.appendChild(banner);
+  if (s.saved_paths.length) {
+    const ul = document.createElement("ul");
+    ul.className = "saved-list";
+    for (const path of s.saved_paths) {
+      const li = document.createElement("li");
+      li.textContent = path;
+      ul.appendChild(li);
+    }
+    els.resultsBody.appendChild(ul);
+  }
+  const done = document.createElement("button");
+  done.className = "btn-secondary reset-btn";
+  done.textContent = "Back to the form";
+  done.addEventListener("click", resetToForm);
+  els.resultsBody.appendChild(done);
 }
 
 // ---- Edit UI -------------------------------------------------------------
@@ -224,21 +335,68 @@ async function renderEditUI(s) {
     wrap.open = s.payloads.length === 1;
     const summary = document.createElement("summary");
     summary.className = "gedit-title";
-    summary.textContent = `${p.name} — ${p.glossary_path.split(/[\\/]/).pop()}`;
+    summary.textContent = `${p.name} · ${p.glossary_path.split(/[\\/]/).pop()}`;
     wrap.appendChild(summary);
     const ta = document.createElement("textarea");
     ta.dataset.idx = String(i);
     ta.textContent = "Loading…";
     wrap.appendChild(ta);
+    const issuesDiv = document.createElement("div");
+    issuesDiv.className = "gedit-issues";
+    issuesDiv.hidden = true;
+    wrap.appendChild(issuesDiv);
+    ta.addEventListener("input", () => scheduleValidate(ta, issuesDiv));
     els.editList.appendChild(wrap);
     try {
       const r = await fetch(`/api/glossary/${currentJobId}/${i}`);
       const data = await r.json();
       ta.value = data.content || "";
+      validateTA(ta, issuesDiv);
     } catch (err) {
       ta.value = `[error loading glossary: ${err.message}]`;
     }
   }
+}
+
+// ---- Glossary format validation ------------------------------------------
+// Live feedback while editing (debounced), plus a confirm gate on Continue: error-level lines are silently dropped by the parser, so the user should know before Phase 2 runs without them.
+const validateTimers = new Map();
+function scheduleValidate(ta, issuesDiv) {
+  clearTimeout(validateTimers.get(ta));
+  validateTimers.set(ta, setTimeout(() => validateTA(ta, issuesDiv), 600));
+}
+async function validateTA(ta, issuesDiv) {
+  try {
+    const r = await fetch("/api/glossary/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: ta.value }),
+    });
+    const data = await r.json();
+    renderIssues(issuesDiv, data.issues || []);
+    return data.issues || [];
+  } catch (err) {
+    return [];
+  }
+}
+function renderIssues(div, issues) {
+  div.innerHTML = "";
+  div.hidden = !issues.length;
+  for (const it of issues) {
+    const row = document.createElement("div");
+    row.className = it.level === "error" ? "issue issue-error" : "issue issue-warning";
+    row.textContent = `${it.level === "error" ? "✖" : "⚠"} Line ${it.line}: ${it.message}`;
+    div.appendChild(row);
+  }
+}
+async function countGlossaryErrors() {
+  let errors = 0;
+  for (const ta of els.editList.querySelectorAll("textarea")) {
+    const issuesDiv = ta.parentElement.querySelector(".gedit-issues");
+    const issues = await validateTA(ta, issuesDiv);
+    errors += issues.filter((i) => i.level === "error").length;
+  }
+  return errors;
 }
 
 async function saveAllEdits() {
@@ -272,6 +430,13 @@ els.continueBtn.addEventListener("click", async () => {
   els.continueBtn.disabled = true;
   els.cancelBtn.disabled = true;
   els.saveBtn.disabled = true;
+  const nErrors = await countGlossaryErrors();
+  if (nErrors && !confirm(`${nErrors} glossary line(s) have format problems (marked ✖ below) and will be IGNORED during translation. Continue anyway?`)) {
+    els.continueBtn.disabled = false;
+    els.cancelBtn.disabled = false;
+    els.saveBtn.disabled = false;
+    return;
+  }
   els.saveStatus.textContent = "Saving…";
   try {
     await saveAllEdits();
@@ -294,8 +459,9 @@ els.continueBtn.addEventListener("click", async () => {
     return;
   }
   els.edit.hidden = true;
+  resetCancelJobBtn();
   els.progress.hidden = false;
-  els.progressTitle.textContent = "Progress — Phase 2: translating";
+  els.progressTitle.textContent = "Progress · Phase 2: translating";
   els.log.textContent = "";
   startPolling();
 });
@@ -319,11 +485,11 @@ function renderResults(s) {
   if (s.failures.length) {
     banner.className = "banner warning";
     banner.textContent =
-      `${ok}/${s.total_count} succeeded — ${s.failures.length} failed.`;
+      `${ok}/${s.total_count} succeeded, ${s.failures.length} failed.`;
   } else {
     banner.className = "banner success";
     banner.textContent =
-      `Done — ${ok} file(s), ${s.totals.blocks} blocks, ` +
+      `Done: ${ok} file(s), ${s.totals.blocks} blocks, ` +
       `${s.totals.chars} chars, ${s.outputs.length} output file(s).`;
   }
   els.resultsBanner.appendChild(banner);
@@ -332,7 +498,7 @@ function renderResults(s) {
     const ul = document.createElement("ul");
     for (const [name, err] of s.failures) {
       const li = document.createElement("li");
-      li.innerHTML = `<strong>${escapeHtml(name)}</strong> — ${escapeHtml(err)}`;
+      li.innerHTML = `<strong>${escapeHtml(name)}</strong>: ${escapeHtml(err)}`;
       ul.appendChild(li);
     }
     els.resultsBody.appendChild(ul);
@@ -405,6 +571,71 @@ function escapeHtml(s) {
 
 // ---- About dialog --------------------------------------------------------
 els.aboutBtn.addEventListener("click", () => els.aboutDialog.showModal());
+els.footerAboutLink.addEventListener("click", (e) => {
+  e.preventDefault();
+  els.aboutDialog.showModal();
+});
+
+// ---- Guided tour ---------------------------------------------------------
+// Each step points at a live element; the popover is repositioned on scroll/resize so it tracks its target.
+const TOUR_STEPS = [
+  { target: () => document.querySelector(".ollama-bar"), title: "Ollama", text: "Ollama is a local AI engine that lets you run large language models directly on your own computer. It must be running for olladoc to translate. If the status here is not green, click Start. The 🔍 opens Ollama's logs if you need to troubleshoot." },
+  { target: () => $("secDocument"), title: "Add a document", text: "Drop a PDF or Word file here, or click Browse files." },
+  { target: () => $("secLanguages"), title: "Languages", text: "Pick the document's language and the language to translate into. Spanish and English are the most tested pair." },
+  { target: () => $("secModel"), title: "Model", text: () => els.modelMissing.hidden
+      ? "This is already set to translategemma, a model made specifically for translation. Leave it as is unless you want to experiment with other models."
+      : "olladoc's default model is translategemma, made specifically for translation. It is not installed yet. Click Download translategemma to get it (a one-time download of a few GB)." },
+  { target: () => $("secWorkflow"), title: "Workflow", text: "One-shot translates in one go. Two-phase lets you review and edit the glossary before translating." },
+  { target: () => $("secOutput"), title: "Output folder", text: "When translation finishes, your files appear below for download and are also saved to this folder. That includes the translation, its glossary, and any tables, footnotes, or comments files." },
+  { target: () => els.submitBtn, title: "Translate", text: "Click Translate to start. Progress appears below, and you can cancel while it runs." },
+];
+let tourIdx = -1;
+
+function tourShow(i) {
+  const el = TOUR_STEPS[i].target();
+  if (!el) { tourEnd(); return; }
+  document.querySelectorAll(".tour-highlight").forEach((n) => n.classList.remove("tour-highlight"));
+  el.classList.add("tour-highlight");
+  tourIdx = i;
+  els.tourPopTitle.textContent = TOUR_STEPS[i].title;
+  const stepText = TOUR_STEPS[i].text;
+  els.tourPopText.textContent = typeof stepText === "function" ? stepText() : stepText;
+  els.tourPopCount.textContent = `${i + 1} / ${TOUR_STEPS.length}`;
+  els.tourPrevBtn.disabled = i === 0;
+  els.tourNextBtn.textContent = i === TOUR_STEPS.length - 1 ? "Done" : "Next";
+  els.tourPop.hidden = false;
+  el.scrollIntoView({ block: "center", behavior: "instant" });
+  tourPosition();
+}
+function tourPosition() {
+  if (tourIdx < 0) return;
+  const el = TOUR_STEPS[tourIdx].target();
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const pop = els.tourPop;
+  let top = rect.bottom + 10;
+  if (top + pop.offsetHeight > window.innerHeight - 10) {
+    top = Math.max(10, rect.top - pop.offsetHeight - 10);
+  }
+  const left = Math.min(Math.max(10, rect.left), window.innerWidth - pop.offsetWidth - 10);
+  pop.style.top = `${top}px`;
+  pop.style.left = `${left}px`;
+}
+function tourEnd() {
+  tourIdx = -1;
+  els.tourPop.hidden = true;
+  document.querySelectorAll(".tour-highlight").forEach((n) => n.classList.remove("tour-highlight"));
+}
+els.tourLink.addEventListener("click", (e) => { e.preventDefault(); tourShow(0); });
+els.tourNextBtn.addEventListener("click", () => {
+  if (tourIdx >= TOUR_STEPS.length - 1) tourEnd();
+  else tourShow(tourIdx + 1);
+});
+els.tourPrevBtn.addEventListener("click", () => { if (tourIdx > 0) tourShow(tourIdx - 1); });
+els.tourCloseBtn.addEventListener("click", tourEnd);
+window.addEventListener("scroll", tourPosition, { passive: true });
+window.addEventListener("resize", tourPosition);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && tourIdx >= 0) tourEnd(); });
 
 // ---- Ollama status + start/stop + model picker ---------------------------
 // Refreshes the status pill, enables/disables Start/Stop, and repopulates the model dropdown from /api/ollama/models.
@@ -424,11 +655,14 @@ async function refreshOllamaStatus() {
     els.ollamaStatusText.textContent = "not running";
     els.ollamaStatusText.className = "status-bad";
   }
+  // Gate the whole form until Ollama is running; the hint explains the gray-out.
+  els.formFields.disabled = !status.running;
+  els.ollamaGateHint.hidden = status.running;
   els.startOllamaBtn.disabled = status.running;
   // Only allow Stop for a process we started ourselves.
   els.stopOllamaBtn.disabled = !(status.running && status.managed);
   els.stopOllamaBtn.title = els.stopOllamaBtn.disabled && status.running
-    ? "Ollama wasn't started by this app — use the menubar app to stop it."
+    ? "Ollama wasn't started by this app; use the menubar app to stop it."
     : "";
   els.pullBtn.disabled = !status.running || !els.pullName.value.trim();
   await refreshModelPicker(status.running);
@@ -436,6 +670,7 @@ async function refreshOllamaStatus() {
 
 async function refreshModelPicker(running) {
   if (!running) {
+    els.modelMissing.hidden = true;   // can't know what's installed without Ollama
     els.modelSelect.hidden = true;
     els.modelInput.hidden = false;
     els.modelSelect.name = "";
@@ -448,6 +683,9 @@ async function refreshModelPicker(running) {
     const data = await r.json();
     models = data.models || [];
   } catch (err) { /* keep fallback */ }
+  // First-run helper: show the download banner while the default model isn't installed. Any translategemma variant (tags, size suffixes, hf.co imports) counts.
+  const hasDefault = models.some((m) => m.name.toLowerCase().includes("translategemma"));
+  els.modelMissing.hidden = hasDefault;
   if (!models.length) {
     els.modelSelect.hidden = true;
     els.modelInput.hidden = false;
@@ -460,7 +698,8 @@ async function refreshModelPicker(running) {
   for (const m of models) {
     const opt = document.createElement("option");
     opt.value = m.name;
-    opt.textContent = `${m.name}  (${m.params}, ${m.size_gb.toFixed(1)} GB)`;
+    const isDefault = m.name.toLowerCase().includes("translategemma");
+    opt.textContent = `${m.name}  (${isDefault ? "default · " : ""}${m.params}, ${m.size_gb.toFixed(1)} GB)`;
     els.modelSelect.appendChild(opt);
   }
   if ([...els.modelSelect.options].some((o) => o.value === prev)) {
@@ -515,6 +754,14 @@ let pullPollTimer = null;
 els.pullName.addEventListener("input", () => {
   els.pullBtn.disabled = !els.pullName.value.trim();
 });
+// "Download translategemma" banner button: reuse the normal pull flow with the name filled in.
+els.getModelBtn.addEventListener("click", () => {
+  els.getModelBtn.disabled = true;
+  $("pullExpander").open = true;
+  els.pullName.value = "translategemma";
+  els.pullBtn.disabled = false;
+  els.pullBtn.click();
+});
 els.pullBtn.addEventListener("click", async () => {
   const name = els.pullName.value.trim();
   if (!name) return;
@@ -537,12 +784,20 @@ els.pullBtn.addEventListener("click", async () => {
   }
   els.pullProgress.hidden = false;
   els.pullLog.textContent = "Starting…";
+  resetCancelPullBtn();
   if (pullPollTimer) clearInterval(pullPollTimer);
   pullPollTimer = setInterval(pollPull, 1000);
 });
 els.cancelPullBtn.addEventListener("click", async () => {
+  els.cancelPullBtn.disabled = true;
+  els.cancelPullBtn.textContent = "Cancelling…";
   await fetch("/api/ollama/pull/cancel", { method: "POST" });
 });
+function resetCancelPullBtn() {
+  els.cancelPullBtn.hidden = false;
+  els.cancelPullBtn.disabled = false;
+  els.cancelPullBtn.textContent = "Cancel";
+}
 async function pollPull() {
   try {
     const r = await fetch("/api/ollama/pull/status");
@@ -553,7 +808,11 @@ async function pollPull() {
       clearInterval(pullPollTimer);
       pullPollTimer = null;
       els.pullBtn.disabled = !els.pullName.value.trim();
+      resetCancelPullBtn();
+      els.cancelPullBtn.hidden = true;   // nothing left to cancel
+      els.getModelBtn.disabled = false;
       if (data.status === "done") {
+        els.pullLog.textContent = "Model installed and ready to use.";
         // Refresh model list so the freshly-pulled model shows up.
         await refreshModelPicker(true);
       }
