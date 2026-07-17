@@ -2,12 +2,12 @@
 
 **Document translation that runs entirely on your own machine.**
 
-olladoc translates `.pdf` and `.docx` files using a language model served by [Ollama](https://ollama.com). Nothing is uploaded — no cloud APIs, no accounts, no per-page costs — which makes it safe for sensitive material.
+olladoc translates PDF and Word documents using large language models that run right on your computer, via [Ollama](https://ollama.com). Your files are never uploaded anywhere, so even sensitive documents are safe to translate. There are no cloud APIs, accounts, or per-page costs.
 
 Beyond privacy, two other things set it apart from pasting text into an online translator:
 
-- **Terminology stays consistent.** olladoc first reads the whole document and builds a glossary of its names, institutions, and technical terms — which to translate (and how), which to keep verbatim. You can review and edit the glossary before it's applied, and every translated chunk is checked against it.
-- **Structure survives.** Headings, lists, footnotes, comments, and tables are extracted, translated, and reassembled into a proper `.docx`.
+- **Terminology stays consistent.** olladoc first reads the whole document and builds a glossary of its names, institutions, and technical terms: which to translate (and how), which to keep verbatim. You can review and edit the glossary before it's applied, and every translated chunk is checked against it.
+- **Structure survives.** The translation keeps as much of the original structure as it can, including headings, lists, and text formatting. Tables, footnotes, and comments are translated separately and saved as their own files.
 
 Use it from a point-and-click [web UI](#using-the-web-app) or the [command line](#using-the-cli). Developed at the Global Rights Innovation Lab, UC Berkeley.
 
@@ -30,15 +30,7 @@ Use it from a point-and-click [web UI](#using-the-web-app) or the [command line]
 - macOS: `brew install ollama`
 - Other: download from https://ollama.com/download
 
-**2. Pull a translation model**
-
-```
-ollama pull translategemma
-```
-
-The model is several GB so the first pull can take a while. Pulling needs Ollama running (see [Run](#run) for the ways to start it) — or skip this step and use the web UI's "Pull a new model" button later. Default model is Google's [TranslateGemma](https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/) but any Ollama-compatible model can work.
-
-**3. Create a Python environment (Python 3.10+)**
+**2. Create a Python environment (Python 3.10+)**
 
 ```
 # venv
@@ -52,7 +44,7 @@ conda create -n olladoc python=3.12   # any version >= 3.10 works
 conda activate olladoc
 ```
 
-**4. Install dependencies**
+**3. Install dependencies**
 
 ```
 pip3 install -r requirements.txt
@@ -60,7 +52,7 @@ pip3 install -r requirements.txt
 
 ## Run
 
-[Setup](#setup) is one-time; after that, every session takes the same three steps.
+[Setup](#setup) is one-time. After that, every session takes the same three steps, plus a one-time model download on your very first run.
 
 **1. Activate your environment**
 
@@ -68,23 +60,25 @@ pip3 install -r requirements.txt
 source .venv/bin/activate       # or: conda activate olladoc
 ```
 
-**2. Make sure Ollama is running** — any one of these works:
+**2. Make sure Ollama is running.** Any one of these works:
 
-- **Desktop app** — if you installed the Ollama desktop app, it's probably already running (it auto-starts at login; look for the menubar icon).
-- **olladoc itself** — the web UI's status bar has a Start button.
-- **Terminal** — run `ollama serve`. It keeps running in the foreground and occupies that terminal; leave it open and continue in a second window.
+- **Desktop app:** likely already running (it auto-starts at login; look for the menubar icon).
+- **olladoc itself:** the web UI's status bar has a Start button.
+- **Terminal:** run `ollama serve`. It stays in the foreground, so leave that window open.
 
-**3. Use the app** — pick one:
+**First run only:** download the default translation model, Google's [TranslateGemma](https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/). In the web UI, click the Download translategemma button when it appears; from a terminal, run `ollama pull translategemma`. The model is several GB, so this takes a while. Any Ollama-compatible model can also work.
 
-**Option A — web UI**
+**3. Use the app.** Pick one:
+
+**Option A: web UI**
 
 ```
 python3 app_flask.py
 ```
 
-The terminal will print `WARNING: This is a development server` — that's expected, since the app is meant to run locally. Open http://localhost:5001. See [Using the web app](#using-the-web-app) for a tour of the interface.
+The terminal will print `WARNING: This is a development server`. That's expected for a local app. Open http://localhost:5001. See [Using the web app](#using-the-web-app) for a tour of the interface.
 
-**Option B — CLI**
+**Option B: CLI**
 
 ```
 python3 translate.py INPUT OUTPUT.docx
@@ -144,7 +138,7 @@ python3 translate.py doc1_English.docx doc1_Spanish.docx --source-lang English -
 
 Note that one run can produce **several files**, not just OUTPUT.docx: the glossary (e.g. `doc1_Spanish_glossary.txt`) plus separate docx files for tables, footnotes, and comments if the source has them (see [Output](#output)). They are all written next to OUTPUT.docx.
 
-**Two-phase workflow** — build the glossary, edit it manually, then translate with it:
+**Two-phase workflow** (build the glossary, edit it by hand, then translate with it):
 
 ```
 python3 translate.py informe.docx informe_en.docx --glossary-only
@@ -192,7 +186,7 @@ Each input produces up to four sibling docx files (`_tables`, `_footnotes`, `_co
 
 ## How it works
 
-At a high level: olladoc reads your document and translates it in two passes. First it scans the whole document and builds a glossary — the names, institutions, and technical terms that must be translated consistently (or kept verbatim, like proper names). Then it translates the document chunk by chunk, feeding the relevant glossary entries to the model with each chunk and checking that the translation respected them. You can pause between the two passes to review and edit the glossary yourself. Finally, everything is reassembled into a `.docx` that mirrors the original's structure. The rest of this section explains the pipeline in more detail.
+At a high level: olladoc reads your document and translates it in two passes. First it scans the whole document and builds a glossary: the names, institutions, and technical terms that must be translated consistently (or kept verbatim). Then it translates chunk by chunk, feeding each chunk the relevant glossary entries and checking that the translation respected them. You can pause between the two passes to review and edit the glossary yourself. Finally, everything is reassembled into a `.docx` that mirrors the original's structure. The rest of this section explains the pipeline in more detail.
 
 ### 1. Every document becomes a list of `Block`s
 
