@@ -417,6 +417,7 @@ class DocumentReviewer:
         text = resp["message"]["content"].strip()
 
         keep, groups = self._parse_keep_term_lines(text)
+        keep, groups = self._drop_absent_terms(segment, keep, groups)
         if segment_index is not None:
             self._snap.step1a_segment(segment_index, segment, prompt, text, keep, groups)
 
@@ -425,6 +426,27 @@ class DocumentReviewer:
             print(f"  [entity_extract] WARN: segment produced 0 parsed terms. Raw LLM response:\n---\n{preview}\n---")
 
         return text, keep, groups
+
+    @staticmethod
+    def _presence_fold(s: str) -> str:
+        """Whitespace-normalized + accent/case fold for the presence check, so a term wrapped across a line break in the segment still matches."""
+        return DocumentReviewer._fold_key(" ".join(s.split()))
+
+    def _drop_absent_terms(self, segment: str, keep: set[str], groups: list[tuple[str, ...]]) -> tuple[set[str], list[tuple[str, ...]]]:
+        """Presence filter: discard any identified term that does not actually occur in the segment (accent/case-insensitive). A "found" term absent from the passage is invented, e.g. copied from the prompt's examples or hallucinated, and must not reach the glossary."""
+        folded_segment = self._presence_fold(segment)
+        present = lambda term: self._presence_fold(term) in folded_segment
+        surviving_keep = {t for t in keep if present(t)}
+        dropped = sorted(keep - surviving_keep)
+        surviving_groups = []
+        for group in groups:
+            in_segment = tuple(v for v in group if present(v))
+            if in_segment:
+                surviving_groups.append(in_segment)
+            dropped.extend(v for v in group if not present(v))
+        if dropped:
+            print(f"  [entity_extract] dropped {len(dropped)} term(s) not present in the passage: {', '.join(dropped[:8])}{'…' if len(dropped) > 8 else ''}")
+        return surviving_keep, surviving_groups
 
     # Common abbreviations whose trailing "." is NOT a sentence boundary.
     # Stripped before the "intra-sentence period" prose check so legal citations like "Cajar vs. Colombia" survive.

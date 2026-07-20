@@ -54,7 +54,7 @@ For each term found, output exactly ONE line:
 - TERM = needs a consistent {target_lang} translation in the final document
 - KEEP = preserve verbatim in the {target_lang} output (personal names, brand names, code identifiers, URLs, LEGAL CASE NAMES)
 - LEGAL CASE NAMES (anything formatted as "Caso X", "X vs. Y", "X v. Y", "Caso X vs. Y") ALWAYS go in KEEP, never TERM.
-  Example: "Caso CAJAR vs. Colombia" → KEEP: Caso CAJAR vs. Colombia (do NOT translate)
+  Example: "Caso Fulano vs. Mengano" → KEEP: Caso Fulano vs. Mengano (do NOT translate)
 - One term per line. No explanation. If nothing applies, output nothing.
 - Skip common words and unspecialized vocabulary.
 
@@ -65,16 +65,18 @@ you MUST list BOTH on the SAME line, separated by | , with the FULLEST form firs
 NEVER emit a bare abbreviation alone if its expansion is present in the passage.
 
 Example — if the passage contains:
-  "personas defensoras de derechos humanos (PDDH)"
+  "red de observadores comunitarios (ROC)"
 You MUST output:
-  TERM: personas defensoras de derechos humanos | PDDH
+  TERM: red de observadores comunitarios | ROC
 NOT:
-  TERM: PDDH                                       (wrong — expansion dropped)
-  TERM: personas defensoras de derechos humanos    (wrong — abbreviation dropped)
+  TERM: ROC                               (wrong — expansion dropped)
+  TERM: red de observadores comunitarios  (wrong — abbreviation dropped)
 
 Same applies to multi-form references — list all known forms of the same entity on one line, fullest first:
-  TERM: Comisión Interamericana de Derechos Humanos | CIDH | Comisión
-  TERM: Corte Interamericana de Derechos Humanos | Corte IDH | Corte
+  TERM: Ministerio de Recursos de Ruritania | MRR | el Ministerio
+  TERM: Tribunal Superior de Ruritania | TSR | el Tribunal
+
+ALL example terms above are invented illustrations. NEVER output an example term unless it actually appears in the passage below.
 
 Passage:
 ---
@@ -91,7 +93,7 @@ Terms:"""
 TRANSLATE_TERMS_PROMPT = """\
 Translate each {source_lang} term below to its canonical {target_lang} form.
 
-For abbreviations, give the canonical {target_lang} abbreviation if one is widely established (e.g. CIDH → IACHR, Corte IDH → IACtHR). \
+For abbreviations, give the canonical {target_lang} abbreviation if one is widely established (e.g. ONU → UN). \
 Otherwise give the standard {target_lang} rendering used in {target_lang} legal / human-rights / academic writing.
 
 Some terms are followed by "[context: ...]" showing a sentence from the source document where the term appears. \
@@ -104,6 +106,7 @@ Output ONE line per input term, in this exact format:
   <source term> → <{target_lang} translation>
 
 Do not add explanation, numbering, or extra lines.
+Translate ONLY the terms listed below. Never add terms of your own or from the examples above.
 
 Terms:
 {terms}
@@ -123,7 +126,7 @@ Do not translate word-for-word if it produces unnatural or incorrect {target_lan
 
 Rules:
 - Preserve inline markdown emphasis exactly: *italic*, **bold**, ***bold-italic***. Do not add markdown the source lacks.
-- Preserve snake_case identifiers (e.g. risk_alert) and ⟪V0⟫ placeholders verbatim.
+- Preserve snake_case identifiers and ⟪V0⟫ placeholders verbatim.
 - Glossary entries are a *meaning* reference only — match the case and formatting of the source text in your output, NOT the case in the glossary entry. If the source says "PERSONAS DEFENSORAS" use ALL CAPS for the translation; if it says "personas defensoras" use lowercase. The glossary tells you WHAT to say, the source tells you HOW to format it.
 
 {glossary_section}
@@ -143,7 +146,7 @@ Do not translate word-for-word if it produces unnatural phrasing. Preserve struc
 
 Rules:
 - Preserve inline markdown emphasis exactly: *italic*, **bold**, ***bold-italic***. Do not add markdown the source lacks.
-- Preserve snake_case identifiers (e.g. risk_alert) and ⟪V0⟫ placeholders verbatim.
+- Preserve snake_case identifiers and ⟪V0⟫ placeholders verbatim.
 - Glossary entries are a *meaning* reference only — match the case and formatting of the source text in your output, NOT the case in the glossary entry. The glossary tells you WHAT to say, the source tells you HOW to format it.
 
 {glossary_section}

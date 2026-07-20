@@ -213,7 +213,16 @@ class Translator:
 
     _PROMPT_LEAK = {"Use established legal phrasing",
                     "Produce ONLY the", "Use standard domain terminology",
-                    "Output ONLY the translation",
+                    "Output ONLY the",
+                    # Persona and rule phrasing from TRANSLATEGEMMA_PROMPT / DEFAULT_PROMPT
+                    "legal translator working from",
+                    "specializing in human rights and public law",
+                    "Produce fluent, idiomatic",
+                    "Do not translate word-for-word",
+                    "Preserve inline markdown emphasis",
+                    "The glossary tells you WHAT to say",
+                    # Glossary block header from DomainGlossary.prompt_section
+                    "use these translations exactly",
                     # Retry-hint header from DomainGlossary.retry_hint_with_previous
                     "The previous translation had terminology errors",
                     "Correct only these specific terms",
@@ -227,7 +236,9 @@ class Translator:
     _HINT_BULLET_RE = re.compile(r"['\"][^'\"]+['\"] must translate to ")
 
     def _is_prompt_echo(self, result):
-        if any(phrase in result for phrase in self._PROMPT_LEAK):
+        # Case-insensitive: leaks often come back re-cased (e.g. as a Title-Case heading).
+        lowered = result.casefold()
+        if any(phrase.casefold() in lowered for phrase in self._PROMPT_LEAK):
             return True
         # Also catch partial echoes of the violation hint bullets — the model
         # sometimes copies the "'X' must translate to Y" lines into its output.
