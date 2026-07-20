@@ -625,6 +625,7 @@ const TOUR_STEPS = [
       ? "This is already set to translategemma, a model made specifically for translation. Leave it as is unless you want to experiment with other models."
       : "olladoc's default model is translategemma, made specifically for translation. It is not installed yet. Click Download translategemma to get it (a one-time download of a few GB)." },
   { target: () => $("secWorkflow"), title: "Workflow", text: "One-shot translates in one go. Two-phase lets you review and edit the glossary before translating." },
+  { target: () => $("secAdvanced"), title: "Advanced options", text: "Optional settings live here: the translator persona, a preview of the translation prompt, and how output files are saved." },
   { target: () => $("secOutput"), title: "Output folder", text: "When translation finishes, your files appear below for download and are also saved to this folder. That includes the translation, its glossary, and any tables, footnotes, or comments files." },
   { target: () => els.submitBtn, title: "Translate", text: "Click Translate to start. Progress appears below, and you can cancel while it runs." },
 ];

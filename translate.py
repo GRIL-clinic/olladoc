@@ -113,19 +113,23 @@ def _translate_preserving_fn(text: str, translate_fn) -> str:
 class Translator:
     """Translates text using a local LLM via Ollama."""
 
+    # Codes for every language the app offers (TranslateGemma's evaluated set). Keep in sync with LANGS in static/app.js.
+    # Per the official spec: bare ISO 639-1 codes, or regionalized language-country pairs. Chinese and Filipino need the regionalized form since they have no plain 639-1 fit (WMT24++ evaluated them as zh_CN and fil_PH).
     GEMMA_LANG_CODES = {
-        "English": "en",
-        "Spanish": "es",
-        "French": "fr",
-        "German": "de",
-        "Portuguese": "pt",
-        "Italian": "it",
-        "Chinese": "zh-Hans",
-        "Japanese": "ja",
-        "Korean": "ko",
-        "Arabic": "ar",
-        "Russian": "ru",
-        "Dutch": "nl",
+        "Arabic": "ar", "Bengali": "bn", "Bulgarian": "bg", "Catalan": "ca",
+        "Chinese": "zh-CN", "Croatian": "hr", "Czech": "cs", "Danish": "da",
+        "Dutch": "nl", "English": "en", "Estonian": "et", "Filipino": "fil-PH",
+        "Finnish": "fi", "French": "fr", "German": "de", "Greek": "el",
+        "Gujarati": "gu", "Hebrew": "he", "Hindi": "hi", "Hungarian": "hu",
+        "Icelandic": "is", "Indonesian": "id", "Italian": "it",
+        "Japanese": "ja", "Kannada": "kn", "Korean": "ko", "Latvian": "lv",
+        "Lithuanian": "lt", "Malayalam": "ml", "Marathi": "mr",
+        "Norwegian": "no", "Persian": "fa", "Polish": "pl",
+        "Portuguese": "pt", "Punjabi": "pa", "Romanian": "ro",
+        "Russian": "ru", "Serbian": "sr", "Slovak": "sk", "Slovenian": "sl",
+        "Spanish": "es", "Swahili": "sw", "Swedish": "sv", "Tamil": "ta",
+        "Telugu": "te", "Thai": "th", "Turkish": "tr", "Ukrainian": "uk",
+        "Urdu": "ur", "Vietnamese": "vi", "Zulu": "zu",
     }
 
     # Matches snake_case identifiers: two or more lowercase/digit words joined by underscores
