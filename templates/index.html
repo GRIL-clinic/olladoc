@@ -116,14 +116,31 @@
       <details class="expander">
         <summary>Advanced options</summary>
         <div class="expander-body">
+          <label class="field-label" for="personaSelect">Translator persona
+            <a href="#" id="promptPreviewLink">(preview prompt)</a></label>
+          <p class="field-hint">Tells the AI what kind of material it is translating.</p>
+          <select id="personaSelect" class="select">
+            <option value="human rights and public law" selected>Human rights / legal (default)</option>
+            <option value="">General</option>
+            <option value="__custom__">Custom…</option>
+          </select>
+          <input type="text" id="personaCustom" class="text-input" placeholder="e.g. children's literature" hidden />
+          <hr class="divider" />
           <label class="checkbox">
             <input type="checkbox" name="keep_glossary" checked />
             <span>Keep glossary file after translation</span>
           </label>
+          <p class="field-hint">Leaves the glossary .txt file in the output folder as a record of the terminology rules that were applied.</p>
           <label class="checkbox">
             <input type="checkbox" name="timestamp" />
             <span>Timestamp output filenames</span>
           </label>
+          <p class="field-hint">Adds the date and time to output filenames, so repeat runs never overwrite earlier ones.</p>
+          <label class="checkbox">
+            <input type="checkbox" name="debug_dump" />
+            <span>Save glossary debug snapshots</span>
+          </label>
+          <p class="field-hint">Saves every glossary-building prompt and model response to a glossary_debug folder inside the output folder. Useful when a glossary looks wrong.</p>
         </div>
       </details>
 
@@ -203,6 +220,18 @@
         </ol>
         <hr />
         <p class="caption">Developed by the Global Rights Innovation Lab Clinic, UC Berkeley. Released under the BSD 3-Clause license.</p>
+        <form method="dialog" class="dialog-actions">
+          <button class="btn-secondary" type="submit">Close</button>
+        </form>
+      </div>
+    </dialog>
+
+    <!-- ========================= PROMPT DIALOG ========================= -->
+    <dialog id="promptDialog" class="dialog dialog-wide">
+      <div class="dialog-body">
+        <h2 class="dialog-title">Translation prompt</h2>
+        <p class="caption">The instructions sent to the model for each chunk, using your current persona, languages, and model.</p>
+        <pre id="promptBody" class="log log-tall"></pre>
         <form method="dialog" class="dialog-actions">
           <button class="btn-secondary" type="submit">Close</button>
         </form>

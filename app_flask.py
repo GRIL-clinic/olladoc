@@ -25,6 +25,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 import translate
 from glossary import DomainGlossary
+from prompts import DEFAULT_DOMAIN
 from translate import translate_document
 
 app = Flask(__name__)
@@ -325,6 +326,10 @@ def _run_phase(job: Job, phases: tuple[str, ...]):
         # translate_document derives its glossary path from the output stem, so Phase 2 must reuse that same stem to find the file.
         # Disable the fresh timestamp; the docx shares Phase 1's stamp so both artifacts of the run stay together on disk.
         phase_timestamp = s["timestamp"]
+        dump_dir = None
+        if s.get("debug_dump"):
+            dump_dir = str(out_dir / "glossary_debug" / Path(p.name).stem)
+            print(f"  Glossary debug snapshots: {dump_dir}", file=stream)
         out_path = p.out_path
         if phases == ("translate",) and p.glossary_path:
             gp = Path(p.glossary_path)
@@ -340,6 +345,8 @@ def _run_phase(job: Job, phases: tuple[str, ...]):
                     phases=phases,
                     keep_glossary=s["keep_glossary"],
                     timestamp=phase_timestamp,
+                    domain=s.get("domain", DEFAULT_DOMAIN),
+                    dump_dir=dump_dir,
                 )
             # Remember the (possibly timestamped) output path so Phase 2 / results use it.
             p.out_path = result.get("output") or out_path
@@ -434,6 +441,8 @@ def start_job():
         "workflow": request.form.get("workflow", "oneshot"),
         "keep_glossary": request.form.get("keep_glossary", "true") == "true",
         "timestamp": request.form.get("timestamp", "false") == "true",
+        "domain": request.form.get("domain", DEFAULT_DOMAIN).strip(),
+        "debug_dump": request.form.get("debug_dump", "false") == "true",
     }
     job = Job(
         id=uuid.uuid4().hex,
@@ -570,6 +579,18 @@ def cancel_job(job_id):
     with job.lock:
         job.log.append("Cancel requested, stopping after the current chunk…")
     return jsonify({"ok": True})
+
+
+@app.get("/api/prompt/preview")
+def prompt_preview():
+    """Render the Phase 2 prompt template for the given persona/model/languages, with placeholders for chunk text and glossary entries."""
+    t = translate.Translator(
+        source_lang=request.args.get("source_lang", "Spanish"),
+        target_lang=request.args.get("target_lang", "English"),
+        model=request.args.get("model", "translategemma"),
+        domain=request.args.get("domain", DEFAULT_DOMAIN),
+    )
+    return jsonify({"prompt": t.prompt_preview()})
 
 
 @app.post("/api/glossary/validate")

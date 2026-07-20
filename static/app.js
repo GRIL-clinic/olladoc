@@ -33,6 +33,11 @@ const els = {
   targetLang: $("targetLang"),
   modelSelect: $("modelSelect"),
   modelInput: $("modelInput"),
+  personaSelect: $("personaSelect"),
+  personaCustom: $("personaCustom"),
+  promptPreviewLink: $("promptPreviewLink"),
+  promptDialog: $("promptDialog"),
+  promptBody: $("promptBody"),
   outputDir: $("outputDir"),
   submitBtn: $("submitBtn"),
   progress: $("progress"),
@@ -207,10 +212,15 @@ els.form.addEventListener("submit", async (e) => {
   fd.append("model", modelValue);
   fd.append("output_dir", els.outputDir.value);
   fd.append("workflow", els.form.querySelector('[name=workflow]:checked').value);
+  fd.append("domain", els.personaSelect.value === "__custom__"
+            ? els.personaCustom.value.trim()
+            : els.personaSelect.value);
   fd.append("keep_glossary",
             els.form.querySelector('[name=keep_glossary]').checked ? "true" : "false");
   fd.append("timestamp",
             els.form.querySelector('[name=timestamp]').checked ? "true" : "false");
+  fd.append("debug_dump",
+            els.form.querySelector('[name=debug_dump]').checked ? "true" : "false");
   els.submitBtn.disabled = true;
   hideAll();
   resetCancelJobBtn();
@@ -568,6 +578,35 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+
+// ---- Persona picker ------------------------------------------------------
+els.personaSelect.addEventListener("change", () => {
+  els.personaCustom.hidden = els.personaSelect.value !== "__custom__";
+  if (!els.personaCustom.hidden) els.personaCustom.focus();
+});
+
+// ---- Prompt preview ------------------------------------------------------
+els.promptPreviewLink.addEventListener("click", async (e) => {
+  e.preventDefault();
+  const domain = els.personaSelect.value === "__custom__"
+    ? els.personaCustom.value.trim()
+    : els.personaSelect.value;
+  const model = !els.modelSelect.hidden ? els.modelSelect.value : els.modelInput.value;
+  const params = new URLSearchParams({
+    domain, model,
+    source_lang: els.sourceLang.value,
+    target_lang: els.targetLang.value,
+  });
+  els.promptBody.textContent = "Loading…";
+  els.promptDialog.showModal();
+  try {
+    const r = await fetch(`/api/prompt/preview?${params}`);
+    const data = await r.json();
+    els.promptBody.textContent = data.prompt || "(no prompt)";
+  } catch (err) {
+    els.promptBody.textContent = `Failed to load: ${err.message}`;
+  }
+});
 
 // ---- About dialog --------------------------------------------------------
 els.aboutBtn.addEventListener("click", () => els.aboutDialog.showModal());

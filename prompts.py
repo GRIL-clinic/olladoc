@@ -31,6 +31,10 @@ If you change those, the linked code needs updating in the same commit.
 """
 
 
+# Default Phase 2 persona/domain. Threaded through Translator(domain=...), the --domain CLI flag, and the web UI's persona picker. An empty string means a general translator with no specialization clause.
+DEFAULT_DOMAIN = "human rights and public law"
+
+
 # ---- Phase 1 (glossary build) ----------------------------------------------
 
 # Parsed by: entity_extract.py DocumentReviewer._parse_keep_term_lines
@@ -101,6 +105,8 @@ USE the context to ground the translation, especially for abbreviations. \
 If the context shows or implies a definition for an abbreviation, translate using THAT definition, NOT a guess from your prior knowledge.
 
 If a term does not translate (proper noun, brand, identifier), output the term unchanged.
+Every translation you output MUST be written in {target_lang}. NEVER answer with the {source_lang} expansion of an abbreviation. \
+For an abbreviation, output its established {target_lang} form (name or abbreviation); if it has none, or you are not certain what it stands for, output the abbreviation unchanged. NEVER guess an expansion.
 
 Output ONE line per input term, in this exact format:
   <source term> → <{target_lang} translation>
@@ -120,9 +126,9 @@ Translations:"""
 # If you change distinctive phrases here (e.g. "Output ONLY the ... translation"), update _PROMPT_LEAK in translate.py so the echo guard still catches model echoes. 
 # The guard is a substring check — match any sentence you'd be unhappy to see echoed verbatim in the model's output.
 TRANSLATEGEMMA_PROMPT = """\
-You are a professional legal translator working from {source_lang} ({src_code}) to {target_lang} ({tgt_code}), specializing in human rights and public law. Produce fluent, idiomatic {target_lang} using standard terminology from international human rights and legal contexts.
+You are a professional translator working from {source_lang} ({src_code}) to {target_lang} ({tgt_code}){specialization}. Produce fluent, idiomatic {target_lang} using standard terminology for the subject matter.
 
-Do not translate word-for-word if it produces unnatural or incorrect {target_lang} — prefer correct legal terminology over literal translation. Preserve structure: a fragment stays a fragment, not a command or full sentence. Do not omit legal qualifiers (e.g., "ex officio").
+Do not translate word-for-word if it produces unnatural or incorrect {target_lang} — prefer correct domain terminology over literal translation. Preserve structure: a fragment stays a fragment, not a command or full sentence. Do not omit qualifiers (e.g., "ex officio").
 
 Rules:
 - Preserve inline markdown emphasis exactly: *italic*, **bold**, ***bold-italic***. Do not add markdown the source lacks.
@@ -140,7 +146,7 @@ Output ONLY the {target_lang} translation, with no explanation or commentary.
 # Echo-guarded by: translate.py Translator._PROMPT_LEAK
 # Same caveat as TRANSLATEGEMMA_PROMPT — update _PROMPT_LEAK if you change distinctive phrasing.
 DEFAULT_PROMPT = """\
-Translate the {source_lang} text below into {target_lang}. Produce clear, natural, idiomatic {target_lang} using standard professional terminology.
+Translate the {source_lang} text below into {target_lang}. Produce clear, natural, idiomatic {target_lang} using standard professional terminology{specialization}.
 
 Do not translate word-for-word if it produces unnatural phrasing. Preserve structure: a fragment stays a fragment, not a command or full sentence.
 

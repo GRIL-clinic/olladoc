@@ -209,6 +209,9 @@ html, body {
 .expander-body {
   padding: 0 0 0.75rem 1rem;
 }
+.expander-body .field-label { margin-top: 0.85rem; }
+.expander-body > .field-label:first-child { margin-top: 0.35rem; }
+.expander-body .checkbox { font-size: 0.875rem; }
 
 /* --- Buttons --------------------------------------------------------- */
 .btn-primary,
@@ -475,6 +478,15 @@ html, body {
 .label-muted {
   color: var(--text-muted);
   font-weight: 400;
+}
+/* Small action link inside a field label, e.g. "(preview prompt)" next to Translator persona. */
+.field-label a {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.field-label a:hover {
+  color: var(--text);
+  text-decoration: underline;
 }
 
 /* --- Glossary validation issues -------------------------------------- */

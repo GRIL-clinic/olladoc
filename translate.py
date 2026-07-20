@@ -23,7 +23,7 @@ from docx.shared import Pt, Inches, RGBColor
 from blocks import (Run, Heading, BodyPara, ListItem, Footnote, Comment,
                     ImageBlock, TablePlaceholder, Separator, Block)
 from glossary import DomainGlossary, GlossaryEntry
-from prompts import TRANSLATEGEMMA_PROMPT, DEFAULT_PROMPT
+from prompts import TRANSLATEGEMMA_PROMPT, DEFAULT_PROMPT, DEFAULT_DOMAIN
 
 
 _BLOCK_IDX_RE = re.compile(r'^\[(\d+)\]\s*')
@@ -135,9 +135,13 @@ class Translator:
 
     def __init__(self, source_lang, target_lang="English", model="translategemma",
                  model_temp=0.3, glossary=None, verbose_glossary=False,
-                 seed=42):
+                 seed=42, domain=DEFAULT_DOMAIN):
         self.source_lang = source_lang
         self.target_lang = target_lang
+        # Subject-matter persona injected into the translation prompt. Empty string = general translator, no specialization clause.
+        self.domain = (domain or "").strip()
+        # A custom domain creates a new echo-able phrase; watch for it alongside the static _PROMPT_LEAK set.
+        self._domain_leak = {f"specializing in {self.domain}"} if self.domain else set()
         # Default model is TranslateGemma:
         # https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/
         self.model = model
@@ -182,10 +186,12 @@ class Translator:
 
     # ---- prompt building ---------------------------------------------------
 
-    def _build_prompt(self, text: str, violation_hint: str = "") -> str:
-        glossary_section = (
-            self.glossary.prompt_section(text) if self.glossary else ""
-        )
+    def _build_prompt(self, text: str, violation_hint: str = "",
+                      glossary_section: str | None = None) -> str:
+        if glossary_section is None:
+            glossary_section = (
+                self.glossary.prompt_section(text) if self.glossary else ""
+            )
         if self.verbose_glossary and glossary_section:
             preview = text.strip().replace("\n", " ")[:80]
             print(f"  [glossary] chunk {preview!r}:\n"
@@ -197,6 +203,7 @@ class Translator:
                 target_lang=self.target_lang,
                 src_code=self.GEMMA_LANG_CODES.get(self.source_lang, "es"),
                 tgt_code=self.GEMMA_LANG_CODES.get(self.target_lang, "en"),
+                specialization=f", specializing in {self.domain}" if self.domain else "",
                 glossary_section=glossary_section,
                 text=text,
             )
@@ -204,10 +211,18 @@ class Translator:
             base = DEFAULT_PROMPT.format(
                 source_lang=self.source_lang,
                 target_lang=self.target_lang,
+                specialization=f" for {self.domain}" if self.domain else "",
                 glossary_section=glossary_section,
                 text=text,
             )
         return base + extra
+
+    def prompt_preview(self) -> str:
+        """The Phase 2 prompt with placeholders for chunk text and glossary entries. Shown in logs and the UI so persona, model, and language changes are visible without running a translation."""
+        return self._build_prompt(
+            "[the chunk of document text being translated goes here]",
+            glossary_section="[glossary entries relevant to this chunk go here]\n",
+        )
 
     # ---- output cleaning ---------------------------------------------------
 
@@ -215,7 +230,7 @@ class Translator:
                     "Produce ONLY the", "Use standard domain terminology",
                     "Output ONLY the",
                     # Persona and rule phrasing from TRANSLATEGEMMA_PROMPT / DEFAULT_PROMPT
-                    "legal translator working from",
+                    "translator working from",
                     "specializing in human rights and public law",
                     "Produce fluent, idiomatic",
                     "Do not translate word-for-word",
@@ -238,7 +253,8 @@ class Translator:
     def _is_prompt_echo(self, result):
         # Case-insensitive: leaks often come back re-cased (e.g. as a Title-Case heading).
         lowered = result.casefold()
-        if any(phrase.casefold() in lowered for phrase in self._PROMPT_LEAK):
+        phrases = self._PROMPT_LEAK | getattr(self, "_domain_leak", set())
+        if any(phrase.casefold() in lowered for phrase in phrases):
             return True
         # Also catch partial echoes of the violation hint bullets — the model
         # sometimes copies the "'X' must translate to Y" lines into its output.
@@ -815,7 +831,8 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
                        review_model=None, glossary=None,
                        verbose_glossary=False, phases=ALL_PHASES,
                        force_rebuild=False, dump_dir=None, seed=42,
-                       keep_glossary=True, timestamp=False):
+                       keep_glossary=True, timestamp=False,
+                       domain=DEFAULT_DOMAIN):
     """Translate a .docx or .pdf file using the two-phase pipeline.
 
     Phases (pass as a tuple to `phases=`):
@@ -939,7 +956,10 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
 
     t = Translator(source_lang=source_lang, target_lang=target_lang,
                    model=model, glossary=resolved,
-                   verbose_glossary=verbose_glossary, seed=seed)
+                   verbose_glossary=verbose_glossary, seed=seed, domain=domain)
+    print(f"  [translate] persona/domain: {t.domain or '(general)'}. Phase 2 prompt template:")
+    for line in t.prompt_preview().splitlines():
+        print(f"    | {line}")
     dt = DocumentTranslator(t)
     result = dt.translate_to_docx(blocks, tables, output_path)
     result["input"] = filepath
@@ -1007,6 +1027,10 @@ if __name__ == "__main__":
                         help="Integer seed for ollama generation (default 42).")
     parser.add_argument("--archive-glossary", metavar="PATH", default=None,
                         help="Copy the glossary file to PATH after Phase 2, then delete the working copy. Useful for dated archives, e.g. --archive-glossary archive/glossary_2026-06-21.txt.")
+    parser.add_argument("--dump-dir", metavar="PATH", default=None,
+                        help="Write Phase 1 debug snapshots (per-segment prompts, raw LLM responses, parsed results) to this directory.")
+    parser.add_argument("--domain", default=DEFAULT_DOMAIN,
+                        help='Subject-matter persona for the translation prompt (default: "human rights and public law"). Pass "" for a general translator.')
     parser.add_argument("--timestamp", action="store_true",
                         help="Insert the current timestamp into the output stem (e.g. foo_2026-06-24_0915.docx) so each run produces a distinct (docx, glossary) pair. Every run also appends a JSON line to translation_log.jsonl in the output directory.")
     args = parser.parse_args()
@@ -1030,4 +1054,6 @@ if __name__ == "__main__":
         seed=args.seed,
         keep_glossary=args.archive_glossary if args.archive_glossary else True,
         timestamp=args.timestamp,
+        domain=args.domain,
+        dump_dir=args.dump_dir,
     )
