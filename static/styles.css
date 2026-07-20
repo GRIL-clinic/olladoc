@@ -247,9 +247,13 @@ html, body {
   color: var(--text);
   border: 1px solid var(--border);
 }
-.btn-secondary:hover {
+.btn-secondary:hover:not(:disabled) {
   border-color: var(--border-strong);
   background: var(--surface);
+}
+.btn-secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .btn-tertiary {
   background: none;

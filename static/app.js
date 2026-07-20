@@ -679,6 +679,11 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && tourIdx 
 // ---- Ollama status + start/stop + model picker ---------------------------
 // Refreshes the status pill, enables/disables Start/Stop, and repopulates the model dropdown from /api/ollama/models.
 // Called on load, after Start/Stop, and every 5s while the page is open.
+// Tracks whether Ollama changed state outside the app (desktop app, terminal), so the status bar can say so instead of looking buggy.
+let ollamaWasRunning = null;
+let ollamaStoppedExternally = false;
+let appIsChangingOllama = false;
+
 async function refreshOllamaStatus() {
   let status;
   try {
@@ -687,11 +692,18 @@ async function refreshOllamaStatus() {
   } catch (err) {
     status = { running: false, version: null, managed: false };
   }
+  if (!status.running && ollamaWasRunning === true && !appIsChangingOllama) {
+    ollamaStoppedExternally = true;
+  }
+  if (status.running) ollamaStoppedExternally = false;
+  ollamaWasRunning = status.running;
   if (status.running) {
-    els.ollamaStatusText.textContent = `running${status.version ? ` (v${status.version})` : ""}`;
+    const external = status.managed ? "" : " · started outside the app";
+    els.ollamaStatusText.textContent = `running${status.version ? ` (v${status.version})` : ""}${external}`;
     els.ollamaStatusText.className = "status-ok";
   } else {
-    els.ollamaStatusText.textContent = "not running";
+    const external = ollamaStoppedExternally ? " · stopped outside the app" : "";
+    els.ollamaStatusText.textContent = `not running${external}`;
     els.ollamaStatusText.className = "status-bad";
   }
   // Gate the whole form until Ollama is running; the hint explains the gray-out.
@@ -701,7 +713,7 @@ async function refreshOllamaStatus() {
   // Only allow Stop for a process we started ourselves.
   els.stopOllamaBtn.disabled = !(status.running && status.managed);
   els.stopOllamaBtn.title = els.stopOllamaBtn.disabled && status.running
-    ? "Ollama wasn't started by this app; use the menubar app to stop it."
+    ? "Ollama was started outside this app, so stop it from where it was started (desktop app or terminal)."
     : "";
   els.pullBtn.disabled = !status.running || !els.pullName.value.trim();
   await refreshModelPicker(status.running);
@@ -751,21 +763,25 @@ async function refreshModelPicker(running) {
 }
 
 els.startOllamaBtn.addEventListener("click", async () => {
+  appIsChangingOllama = true;
   els.startOllamaBtn.disabled = true;
   els.ollamaStatusText.textContent = "starting…";
   const r = await fetch("/api/ollama/start", { method: "POST" });
   const data = await r.json().catch(() => ({}));
   if (!data.ok && data.error) alert(data.error);
   await refreshOllamaStatus();
+  appIsChangingOllama = false;
 });
 
 els.stopOllamaBtn.addEventListener("click", async () => {
+  appIsChangingOllama = true;
   els.stopOllamaBtn.disabled = true;
   els.ollamaStatusText.textContent = "stopping…";
   const r = await fetch("/api/ollama/stop", { method: "POST" });
   const data = await r.json().catch(() => ({}));
   if (!data.ok && data.error) alert(data.error);
   await refreshOllamaStatus();
+  appIsChangingOllama = false;
 });
 
 // ---- Logs dialog ---------------------------------------------------------
@@ -775,13 +791,30 @@ els.viewLogsLink.addEventListener("click", async (e) => {
   els.logsDialog.showModal();
 });
 els.refreshLogsBtn.addEventListener("click", loadOllamaLogs);
+function fmtAge(seconds) {
+  if (seconds < 90) return "just now";
+  if (seconds < 5400) return `${Math.round(seconds / 60)} minutes ago`;
+  if (seconds < 129600) return `${Math.round(seconds / 3600)} hours ago`;
+  return `${Math.round(seconds / 86400)} days ago`;
+}
+
 async function loadOllamaLogs() {
   els.logsBody.textContent = "Loading…";
   try {
     const r = await fetch("/api/ollama/log?n=500");
     const data = await r.json();
-    els.logsPath.textContent = data.path ? `Log file: ${data.path}` : "No log file found.";
-    els.logsBody.textContent = data.log || "(empty)";
+    if (!data.path) {
+      els.logsPath.textContent = "No log file found.";
+      els.logsBody.textContent = "If Ollama was started in a terminal, its logs appear in that terminal window, not here. To see Ollama logs in the app, stop that Ollama and start it with the Start button above instead.";
+      return;
+    }
+    const age = data.modified != null ? ` (last updated ${fmtAge(data.modified)})` : "";
+    els.logsPath.textContent = `Log file: ${data.path}${age}`;
+    // A log that hasn't been touched in over an hour while Ollama runs is probably from an earlier session, e.g. when Ollama was started in a terminal instead.
+    const stale = data.modified != null && data.modified > 3600 && ollamaWasRunning;
+    els.logsBody.textContent = (stale
+      ? "NOTE: this log file has not been updated recently. The running Ollama was likely started elsewhere (e.g. a terminal), and its logs are not available here.\n\n"
+      : "") + (data.log || "(empty)");
     els.logsBody.scrollTop = els.logsBody.scrollHeight;
   } catch (err) {
     els.logsBody.textContent = `Failed to load logs: ${err.message}`;

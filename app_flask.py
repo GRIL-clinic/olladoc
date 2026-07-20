@@ -638,9 +638,14 @@ def ollama_stop():
 def ollama_log():
     path = _active_log_path()
     if not path:
-        return jsonify({"path": None, "log": ""})
+        return jsonify({"path": None, "log": "", "modified": None})
     n = int(request.args.get("n", 200))
-    return jsonify({"path": str(path), "log": _read_log_tail(path, n)})
+    # Report the file's age so the UI can flag stale logs: a terminal-started Ollama writes to neither known log file, leaving only leftovers from earlier sessions.
+    try:
+        modified = int(time.time() - path.stat().st_mtime)
+    except Exception:
+        modified = None
+    return jsonify({"path": str(path), "log": _read_log_tail(path, n), "modified": modified})
 
 
 @app.get("/api/ollama/models")
