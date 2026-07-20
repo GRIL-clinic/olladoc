@@ -885,6 +885,14 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
     if not phases:
         raise ValueError("phases must be non-empty")
 
+    in_p = Path(filepath)
+    if in_p.is_dir():
+        raise ValueError(f"{filepath} is a folder. translate.py takes a single .pdf or .docx file; to translate every file in a folder, use batch_translate.py.")
+    if not in_p.exists():
+        raise ValueError(f"input file not found: {filepath}")
+    if in_p.suffix.lower() not in (".pdf", ".docx"):
+        raise ValueError(f"unsupported input type {in_p.suffix or '(no extension)'}: expected a .pdf or .docx file")
+
     blocks, tables = _extract_blocks(filepath)
 
     out_p = Path(output_path)
@@ -984,6 +992,13 @@ def translate_document(filepath, output_path, *, source_lang="Spanish",
         "phases": list(phases),
         "model": model,
     })
+    # Absolute-path summary of everything written
+    saved = [result.get(k) for k in ("text_output", "tables_output", "footnotes_output", "comments_output") if result.get(k)]
+    if result.get("glossary_path"):
+        saved.append(result["glossary_path"])
+    print(f"  [translate_document] saved {len(saved)} file(s):")
+    for pth in saved:
+        print(f"    {Path(pth).resolve()}")
     return result
 
 
@@ -1044,16 +1059,19 @@ if __name__ == "__main__":
     else:
         phases = ALL_PHASES
 
-    translate_document(
-        args.input_path, args.output_docx,
-        source_lang=args.source_lang, target_lang=args.target_lang,
-        model=args.model, review_model=args.review_model,
-        phases=phases,
-        force_rebuild=args.force_rebuild,
-        glossary=False if args.no_glossary else None,
-        seed=args.seed,
-        keep_glossary=args.archive_glossary if args.archive_glossary else True,
-        timestamp=args.timestamp,
-        domain=args.domain,
-        dump_dir=args.dump_dir,
-    )
+    try:
+        translate_document(
+            args.input_path, args.output_docx,
+            source_lang=args.source_lang, target_lang=args.target_lang,
+            model=args.model, review_model=args.review_model,
+            phases=phases,
+            force_rebuild=args.force_rebuild,
+            glossary=False if args.no_glossary else None,
+            seed=args.seed,
+            keep_glossary=args.archive_glossary if args.archive_glossary else True,
+            timestamp=args.timestamp,
+            domain=args.domain,
+            dump_dir=args.dump_dir,
+        )
+    except ValueError as e:
+        raise SystemExit(f"error: {e}")
