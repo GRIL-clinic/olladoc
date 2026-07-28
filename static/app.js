@@ -622,11 +622,11 @@ const TOUR_STEPS = [
   { target: () => $("secDocument"), title: "Add a document", text: "Drop a PDF or Word file here, or click Browse files." },
   { target: () => $("secLanguages"), title: "Languages", text: "Pick the document's language and the language to translate into. Spanish and English are the most tested pair." },
   { target: () => $("secModel"), title: "Model", text: () => els.modelMissing.hidden
-      ? "This is already set to translategemma, a model made specifically for translation. Leave it as is unless you want to experiment with other models."
-      : "olladoc's default model is translategemma, made specifically for translation. It is not installed yet. Click Download translategemma to get it (a one-time download of a few GB)." },
-  { target: () => $("secWorkflow"), title: "Workflow", text: "One-shot translates in one go. Two-phase lets you review and edit the glossary before translating." },
+      ? "This is already set up for you. Change it only if you want to experiment with other models."
+      : "The default model is not installed yet. Click Download translategemma to get it (a one-time download of a few GB)." },
+  { target: () => $("secWorkflow"), title: "Workflow", text: "Pick how to run: straight through, or with a pause to review the glossary before translating. Two-phase is worth it when exact terminology matters." },
   { target: () => $("secAdvanced"), title: "Advanced options", text: "Optional settings live here: the translator persona, a preview of the translation prompt, and how output files are saved." },
-  { target: () => $("secOutput"), title: "Output folder", text: "When translation finishes, your files appear below for download and are also saved to this folder. That includes the translation, its glossary, and any tables, footnotes, or comments files." },
+  { target: () => $("secOutput"), title: "Output folder", text: "Finished files are saved here and also appear below as download links when the translation completes." },
   { target: () => els.submitBtn, title: "Translate", text: "Click Translate to start. Progress appears below, and you can cancel while it runs." },
 ];
 let tourIdx = -1;

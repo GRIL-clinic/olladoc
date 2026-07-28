@@ -460,6 +460,17 @@ html, body {
   margin-bottom: 0.5rem;
 }
 
+/* Translate button with its wait-expectation note beside it. */
+.submit-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  flex-wrap: wrap;
+}
+.submit-row .btn-primary { margin-top: 0; }
+.submit-row .field-hint { margin: 0; flex: 1; min-width: 14rem; }
+
 /* --- Form gating (disabled until Ollama is running) ------------------- */
 .form-fields {
   border: none;
@@ -585,8 +596,8 @@ html, body {
   font-weight: 600;
   white-space: nowrap;
 }
-.dialog-body ol { margin: 0.5rem 0 0; padding-left: 1.4rem; }
-.dialog-body ol li { margin: 0.4rem 0; }
+.dialog-body ol, .dialog-body ul { margin: 0.5rem 0 0; padding-left: 1.4rem; }
+.dialog-body ol li, .dialog-body ul li { margin: 0.4rem 0; }
 .dialog-body h3 { margin: 0.75rem 0 0.25rem; font-size: 1.05rem; }
 .dialog-wide { max-width: 52rem; }
 .log-tall { max-height: 30rem; }

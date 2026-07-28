@@ -12,7 +12,7 @@
       <h1 class="title">olladoc</h1>
       <button id="aboutBtn" class="btn-tertiary" title="About" type="button">✨</button>
     </div>
-    <p class="caption">Local (private) <code>.pdf</code> / <code>.docx</code> translation via Ollama</p>
+    <p class="caption">Local, private, customizable <code>.pdf</code> / <code>.docx</code> translation via Ollama</p>
     <p class="caption">New here? <a href="#" id="tourLink">Take a quick tour</a></p>
 
     <!-- ======================== OLLAMA STATUS BAR ======================= -->
@@ -67,8 +67,9 @@
       </div>
 
       <!-- Model — dropdown when Ollama is running, text input otherwise. -->
-      <div id="secModel" title="The AI model that does the translating. The default, translategemma, was built specifically for translation.">
+      <div id="secModel">
       <label class="field-label" for="model">Model</label>
+      <p class="field-hint">The AI model that does the translating. The default, translategemma, was made specifically for translation.</p>
       <select id="modelSelect" name="model" class="select" hidden></select>
       <input type="text" id="modelInput" name="model" class="text-input" value="translategemma" />
       <div id="modelMissing" class="banner warning model-missing" hidden>
@@ -81,8 +82,7 @@
         <summary>Pull a new model <span class="label-muted">(optional)</span></summary>
         <div class="expander-body">
           <p class="caption">
-            A model is the AI that does the translating. The default one (<code>translategemma</code>) was built specifically for translation, so most people never need to change it.
-            To experiment, pull (download) another model from <a href="https://ollama.com/library" target="_blank">ollama.com/library</a>.
+            Pulling downloads another model to this machine from <a href="https://ollama.com/library" target="_blank">ollama.com/library</a>.
             Most general-purpose models can translate too, though quality and language coverage vary. Keep in mind that models are big downloads, usually several GB.
           </p>
           <div class="pull-row">
@@ -98,8 +98,9 @@
       </div>
 
       <!-- Workflow ----------------------------------------------------- -->
-      <div id="secWorkflow" title="One-shot builds the glossary and translates in a single run. Two-phase pauses after the glossary is built, so you can review and edit it before anything is translated.">
+      <div id="secWorkflow">
         <label class="field-label">Workflow</label>
+        <p class="field-hint">One-shot translates in one go. Two-phase first builds a glossary (a list of key terms and how to translate them), then pauses so you can review and edit it before anything is translated.</p>
         <div class="radio-group">
           <label class="radio">
             <input type="radio" name="workflow" value="oneshot" checked />
@@ -152,7 +153,10 @@
       </div>
 
       <!-- Submit ------------------------------------------------------- -->
-      <button id="submitBtn" type="submit" class="btn-primary" disabled>Translate</button>
+      <div class="submit-row">
+        <button id="submitBtn" type="submit" class="btn-primary" disabled>Translate</button>
+        <p class="field-hint">Translation runs entirely on your computer. That keeps your documents private, but it can take a while.</p>
+      </div>
       </fieldset>
     </form>
 
@@ -218,6 +222,9 @@
           <li>If <code>translategemma</code> is not installed yet, click <span class="ui-ref">Download translategemma</span>. This is a one-time download of a few GB.</li>
           <li>Upload a document, pick your source and target languages, and click <span class="ui-ref">Translate</span>.</li>
         </ol>
+        <hr />
+        <h3>Limitations</h3>
+        <p>Like any automatic translator, olladoc is not perfect, so double-check anything important before relying on it. If exact terminology matters, the two-phase workflow gives you a chance to review an automatically created glossary before anything is translated. Spanish and English are the most thoroughly tested languages; review other languages with extra care. Complicated layouts may lose some formatting.</p>
         <hr />
         <p class="caption">Developed by the Global Rights Innovation Lab Clinic, UC Berkeley. Released under the BSD 3-Clause license.</p>
         <form method="dialog" class="dialog-actions">
