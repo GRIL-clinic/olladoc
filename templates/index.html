@@ -117,7 +117,7 @@
       <details class="expander" id="secAdvanced">
         <summary>Advanced options</summary>
         <div class="expander-body">
-          <label class="field-label" for="personaSelect">Translator persona
+          <label class="field-label group-label" for="personaSelect">Translator persona
             <a href="#" id="promptPreviewLink">(preview prompt)</a></label>
           <p class="field-hint">Tells the AI what kind of material it is translating.</p>
           <select id="personaSelect" class="select">
@@ -127,11 +127,29 @@
           </select>
           <input type="text" id="personaCustom" class="text-input" placeholder="e.g. children's literature" hidden />
           <hr class="divider" />
+          <label class="field-label group-label">Glossary</label>
+          <label class="checkbox">
+            <input type="checkbox" name="use_global_glossary" />
+            <span>Include my global glossary</span>
+            <a href="#" id="viewGlobalLink">(view)</a>
+          </label>
+          <p class="field-hint" id="globalGlossaryHint">Your global glossary is a personal term list that grows as you approve terms on the review screen.</p>
+          <label class="checkbox">
+            <input type="checkbox" id="useBaseGlossary" />
+            <span>Use a base glossary for this run</span>
+          </label>
+          <p class="field-hint">Start from an existing glossary file. Its terms are kept as written, and the automatic pass only adds terms it does not already cover.</p>
+          <input type="file" id="baseGlossary" name="base_glossary" accept=".txt" hidden />
+          <p class="field-hint hint-error" id="baseGlossaryError" hidden>Choose a base glossary file, or uncheck this option.</p>
+          <!-- Hidden for now; the glossary file is always kept (the backend default). Uncomment to expose the choice again.
           <label class="checkbox">
             <input type="checkbox" name="keep_glossary" checked />
             <span>Keep glossary file after translation</span>
           </label>
           <p class="field-hint">Leaves the glossary .txt file in the output folder as a record of the terminology rules that were applied.</p>
+          -->
+          <hr class="divider" />
+          <label class="field-label group-label">Output</label>
           <label class="checkbox">
             <input type="checkbox" name="timestamp" />
             <span>Timestamp output filenames</span>
@@ -155,7 +173,7 @@
       <!-- Submit ------------------------------------------------------- -->
       <div class="submit-row">
         <button id="submitBtn" type="submit" class="btn-primary" disabled>Translate</button>
-        <p class="field-hint">Translation runs entirely on your computer. That keeps your documents private, but it can take a while.</p>
+        <p class="field-hint">Translation runs entirely on your computer. This keeps your documents private, but it can take a while.</p>
       </div>
       </fieldset>
     </form>
@@ -183,6 +201,7 @@
         <button id="saveBtn" class="btn-secondary" type="button">Save changes</button>
         <button id="cancelBtn" class="btn-secondary" type="button">Cancel</button>
         <span id="saveStatus" class="save-status" aria-live="polite"></span>
+        <button id="addGlobalBtn" class="btn-secondary push-right" type="button" title="Add these reviewed terms to your personal global glossary, for reuse in future translations.">Add to global glossary</button>
       </div>
     </section>
 
@@ -227,6 +246,31 @@
         <p>Like any automatic translator, olladoc is not perfect, so double-check anything important before relying on it. If exact terminology matters, the two-phase workflow gives you a chance to review an automatically created glossary before anything is translated. Spanish and English are the most thoroughly tested languages; review other languages with extra care. Complicated layouts may lose some formatting.</p>
         <hr />
         <p class="caption">Developed by the Global Rights Innovation Lab Clinic, UC Berkeley. Released under the BSD 3-Clause license.</p>
+        <form method="dialog" class="dialog-actions">
+          <button class="btn-secondary" type="submit">Close</button>
+        </form>
+      </div>
+    </dialog>
+
+    <!-- ==================== GLOSSARY CONFLICT DIALOG =================== -->
+    <dialog id="conflictDialog" class="dialog">
+      <div class="dialog-body">
+        <h2 class="dialog-title">Global glossary conflicts</h2>
+        <p class="caption">Your review differs from the global glossary for these terms. Choose which definition the global glossary should keep for each. These choices only change the global glossary for future translations. This document will still be translated using the glossary exactly as you reviewed it.</p>
+        <div id="conflictList"></div>
+        <div class="dialog-actions">
+          <button id="conflictKeepBtn" class="btn-secondary" type="button">Cancel</button>
+          <button id="conflictUpdateBtn" class="btn-primary" type="button">Apply choices</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- ==================== GLOBAL GLOSSARY DIALOG ===================== -->
+    <dialog id="globalDialog" class="dialog dialog-wide">
+      <div class="dialog-body">
+        <h2 class="dialog-title">Global glossary</h2>
+        <p class="caption" id="globalDialogPath"></p>
+        <pre id="globalDialogBody" class="log log-tall"></pre>
         <form method="dialog" class="dialog-actions">
           <button class="btn-secondary" type="submit">Close</button>
         </form>

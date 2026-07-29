@@ -212,6 +212,12 @@ html, body {
 .expander-body .field-label { margin-top: 0.85rem; }
 .expander-body > .field-label:first-child { margin-top: 0.35rem; }
 .expander-body .checkbox { font-size: 0.875rem; }
+.group-label { font-weight: 600; }
+.expander-body input[type="file"] {
+  font-size: 0.85rem;
+  margin: 0.1rem 0 0.4rem;
+  color: var(--text-muted);
+}
 
 /* --- Buttons --------------------------------------------------------- */
 .btn-primary,
@@ -349,6 +355,18 @@ html, body {
   box-shadow: 0 0 0 1px var(--primary);
 }
 
+/* --- Review notes - */
+.review-notes {
+  background: var(--surface);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.9rem;
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+}
+.review-notes ul { margin: 0.35rem 0 0; padding-left: 1.2rem; }
+.review-notes li { margin: 0.25rem 0; }
+
 /* --- Edit actions row (Continue / Save / Cancel + save status) ------ */
 .edit-actions {
   display: flex;
@@ -362,6 +380,8 @@ html, body {
   color: var(--text-muted);
   margin-left: 0.35rem;
 }
+.edit-actions .push-right { margin-left: auto; }
+.edit-actions .btn-primary { margin-top: 0; }
 
 /* --- Result banners -------------------------------------------------- */
 .banner {
@@ -494,12 +514,15 @@ html, body {
   color: var(--text-muted);
   font-weight: 400;
 }
-/* Small action link inside a field label, e.g. "(preview prompt)" next to Translator persona. */
-.field-label a {
+.hint-error { color: #b00020; }
+/* Small action link inside a field label or checkbox row, e.g. "(preview prompt)" or "(view)". */
+.field-label a,
+.checkbox a {
   color: var(--text-muted);
   text-decoration: none;
 }
-.field-label a:hover {
+.field-label a:hover,
+.checkbox a:hover {
   color: var(--text);
   text-decoration: underline;
 }
@@ -590,7 +613,18 @@ html, body {
   gap: 1rem;
 }
 .dialog-header .dialog-title { margin: 0; }
-.dialog-actions { display: flex; justify-content: flex-end; margin-top: 1rem; }
+.dialog-actions { display: flex; justify-content: flex-end; margin-top: 1rem; gap: 0.5rem; }
+.dialog-actions .btn-primary { margin-top: 0; }
+.conflict-item { margin: 0.75rem 0; }
+.conflict-term { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.2rem; }
+.conflict-option {
+  display: flex;
+  align-items: flex-start;
+  margin: 0.15rem 0 0.15rem 0.5rem;
+  font-size: 0.9rem;
+}
+.conflict-option input { margin-top: 0.25rem; }
+.conflict-tag { color: var(--text-muted); font-size: 0.8rem; }
 /* Inline reference to a button/control in help text. */
 .ui-ref {
   font-weight: 600;

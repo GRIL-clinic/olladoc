@@ -35,6 +35,19 @@ const els = {
   modelInput: $("modelInput"),
   personaSelect: $("personaSelect"),
   personaCustom: $("personaCustom"),
+  baseGlossary: $("baseGlossary"),
+  useBaseGlossary: $("useBaseGlossary"),
+  baseGlossaryError: $("baseGlossaryError"),
+  globalGlossaryHint: $("globalGlossaryHint"),
+  addGlobalBtn: $("addGlobalBtn"),
+  viewGlobalLink: $("viewGlobalLink"),
+  conflictDialog: $("conflictDialog"),
+  conflictList: $("conflictList"),
+  conflictKeepBtn: $("conflictKeepBtn"),
+  conflictUpdateBtn: $("conflictUpdateBtn"),
+  globalDialog: $("globalDialog"),
+  globalDialogPath: $("globalDialogPath"),
+  globalDialogBody: $("globalDialogBody"),
   promptPreviewLink: $("promptPreviewLink"),
   promptDialog: $("promptDialog"),
   promptBody: $("promptBody"),
@@ -202,6 +215,13 @@ els.form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const files = Array.from(els.filesInput.files || []);
   if (files.length === 0) return;
+  if (els.useBaseGlossary.checked && !els.baseGlossary.files.length) {
+    $("secAdvanced").open = true;
+    els.baseGlossary.hidden = false;
+    els.baseGlossaryError.hidden = false;
+    els.baseGlossary.scrollIntoView({ block: "center", behavior: "instant" });
+    return;
+  }
   const fd = new FormData();
   for (const f of files) fd.append("files", f);
   fd.append("source_lang", els.sourceLang.value);
@@ -215,12 +235,18 @@ els.form.addEventListener("submit", async (e) => {
   fd.append("domain", els.personaSelect.value === "__custom__"
             ? els.personaCustom.value.trim()
             : els.personaSelect.value);
-  fd.append("keep_glossary",
-            els.form.querySelector('[name=keep_glossary]').checked ? "true" : "false");
+  // The keep-glossary checkbox is currently commented out of the form; when absent, the glossary is always kept (backend default).
+  const keepGlossaryEl = els.form.querySelector('[name=keep_glossary]');
+  fd.append("keep_glossary", keepGlossaryEl && !keepGlossaryEl.checked ? "false" : "true");
   fd.append("timestamp",
             els.form.querySelector('[name=timestamp]').checked ? "true" : "false");
   fd.append("debug_dump",
             els.form.querySelector('[name=debug_dump]').checked ? "true" : "false");
+  fd.append("use_global_glossary",
+            els.form.querySelector('[name=use_global_glossary]').checked ? "true" : "false");
+  if (els.useBaseGlossary.checked && els.baseGlossary.files.length) {
+    fd.append("base_glossary", els.baseGlossary.files[0]);
+  }
   els.submitBtn.disabled = true;
   hideAll();
   resetCancelJobBtn();
@@ -361,6 +387,21 @@ async function renderEditUI(s) {
       const r = await fetch(`/api/glossary/${currentJobId}/${i}`);
       const data = await r.json();
       ta.value = data.content || "";
+      if (data.notes && data.notes.length) {
+        const nd = document.createElement("div");
+        nd.className = "review-notes";
+        const heading = document.createElement("strong");
+        heading.textContent = "Worth a look before you continue:";
+        nd.appendChild(heading);
+        const ul = document.createElement("ul");
+        for (const n of data.notes) {
+          const li = document.createElement("li");
+          li.textContent = n;
+          ul.appendChild(li);
+        }
+        nd.appendChild(ul);
+        wrap.insertBefore(nd, ta);
+      }
       validateTA(ta, issuesDiv);
     } catch (err) {
       ta.value = `[error loading glossary: ${err.message}]`;
@@ -422,6 +463,142 @@ async function saveAllEdits() {
   }
 }
 
+// Append reviewed terms to the personal global glossary. Only offered here, on the review screen, so everything in the global file has passed human review.
+els.addGlobalBtn.addEventListener("click", async () => {
+  els.addGlobalBtn.disabled = true;
+  els.saveStatus.textContent = "Adding to global glossary…";
+  try {
+    const content = Array.from(els.editList.querySelectorAll("textarea"))
+      .map((ta) => ta.value).join("\n");
+    const r = await fetch("/api/global_glossary/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+    const data = await r.json();
+    const parts = [];
+    if (data.added) parts.push(`Added ${data.added} new term(s).`);
+    if (data.unchanged && data.unchanged.length) {
+      parts.push(`Already in your global glossary: ${data.unchanged.join(", ")}.`);
+    }
+    if (data.conflicts && data.conflicts.length) {
+      // Past human judgment (the global) vs present human judgment (this review): only the user knows which is right, per term, so ask on the spot with a checkbox each.
+      const chosen = await resolveConflicts(data.conflicts);
+      if (chosen.length) {
+        const r2 = await fetch("/api/global_glossary/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content, overwrite: chosen }),
+        });
+        const d2 = await r2.json();
+        if (d2.updated && d2.updated.length) {
+          parts.push(`Updated in the global glossary: ${d2.updated.join(", ")}.`);
+        }
+      }
+      const kept = data.conflicts.map((x) => x.term).filter((t) => !chosen.includes(t));
+      if (kept.length) parts.push(`Kept the global version for: ${kept.join(", ")}.`);
+    }
+    els.saveStatus.textContent = parts.join(" ") || "Nothing to add.";
+  } catch (err) {
+    els.saveStatus.textContent = `Failed to update global glossary: ${err.message}`;
+  } finally {
+    els.addGlobalBtn.disabled = false;
+  }
+});
+
+// Checking the base-glossary box reveals the file input and opens the picker right away; unchecking clears the selection.
+els.useBaseGlossary.addEventListener("change", () => {
+  els.baseGlossaryError.hidden = true;
+  if (els.useBaseGlossary.checked) {
+    els.baseGlossary.hidden = false;
+    els.baseGlossary.click();
+  } else {
+    els.baseGlossary.value = "";
+    els.baseGlossary.hidden = true;
+  }
+});
+els.baseGlossary.addEventListener("change", () => {
+  if (els.baseGlossary.files.length) els.baseGlossaryError.hidden = true;
+});
+
+els.viewGlobalLink.addEventListener("click", async (e) => {
+  e.preventDefault();
+  els.globalDialogBody.textContent = "Loading…";
+  els.globalDialogPath.textContent = "";
+  els.globalDialog.showModal();
+  try {
+    const r = await fetch("/api/global_glossary");
+    const g = await r.json();
+    if (!g.exists) {
+      els.globalDialogPath.textContent = `Will be created at ${g.path}`;
+      els.globalDialogBody.textContent = "No global glossary yet. Run a two-phase translation and use the Add new terms to global glossary button on the review screen to start one.";
+      return;
+    }
+    els.globalDialogPath.textContent = `${g.entries} term(s) · ${g.path}`;
+    els.globalDialogBody.textContent = g.content;
+  } catch (err) {
+    els.globalDialogBody.textContent = `Failed to load: ${err.message}`;
+  }
+});
+
+// Shows the conflict dialog and resolves with the terms the user ticked for updating. Closing the dialog any other way (Escape, Keep button) resolves with none.
+function resolveConflicts(conflicts) {
+  return new Promise((resolve) => {
+    els.conflictList.innerHTML = "";
+    conflicts.forEach((c, idx) => {
+      const wrap = document.createElement("div");
+      wrap.className = "conflict-item";
+      const title = document.createElement("div");
+      title.className = "conflict-term";
+      title.textContent = c.term;
+      wrap.appendChild(title);
+      // One radio pair per term: the global's definition (default, so nothing changes without an active choice) vs this review's.
+      [["global", c.kept, "global glossary"], ["review", c.offered, "this review"]].forEach(([val, definition, tag]) => {
+        const row = document.createElement("label");
+        row.className = "radio conflict-option";
+        const rb = document.createElement("input");
+        rb.type = "radio";
+        rb.name = `conflict_${idx}`;
+        rb.value = val;
+        rb.dataset.term = c.term;
+        if (val === "global") rb.checked = true;
+        const span = document.createElement("span");
+        span.innerHTML = `${escapeHtml(definition)} <span class="conflict-tag">(${tag})</span>`;
+        row.appendChild(rb);
+        row.appendChild(span);
+        wrap.appendChild(row);
+      });
+      els.conflictList.appendChild(wrap);
+    });
+    let settled = false;
+    const settle = (val) => { if (!settled) { settled = true; resolve(val); } };
+    const collect = () =>
+      Array.from(els.conflictList.querySelectorAll('input[value="review"]:checked')).map((i) => i.dataset.term);
+    const onUpdate = () => { settle(collect()); els.conflictDialog.close(); };
+    const onKeep = () => { settle([]); els.conflictDialog.close(); };
+    const onClose = () => {
+      settle([]);
+      els.conflictUpdateBtn.removeEventListener("click", onUpdate);
+      els.conflictKeepBtn.removeEventListener("click", onKeep);
+      els.conflictDialog.removeEventListener("close", onClose);
+    };
+    els.conflictUpdateBtn.addEventListener("click", onUpdate);
+    els.conflictKeepBtn.addEventListener("click", onKeep);
+    els.conflictDialog.addEventListener("close", onClose);
+    els.conflictDialog.showModal();
+  });
+}
+
+async function refreshGlobalGlossaryHint() {
+  try {
+    const r = await fetch("/api/global_glossary");
+    const g = await r.json();
+    els.globalGlossaryHint.textContent = g.exists
+      ? `Your global glossary has ${g.entries} term(s), stored at ${g.path}.`
+      : "Your global glossary is a personal term list that grows as you approve terms on the review screen.";
+  } catch (err) { /* keep the default hint */ }
+}
+
 els.saveBtn.addEventListener("click", async () => {
   els.saveBtn.disabled = true;
   els.saveStatus.textContent = "Saving…";
@@ -440,40 +617,37 @@ els.continueBtn.addEventListener("click", async () => {
   els.continueBtn.disabled = true;
   els.cancelBtn.disabled = true;
   els.saveBtn.disabled = true;
-  const nErrors = await countGlossaryErrors();
-  if (nErrors && !confirm(`${nErrors} glossary line(s) have format problems (marked ✖ below) and will be IGNORED during translation. Continue anyway?`)) {
-    els.continueBtn.disabled = false;
-    els.cancelBtn.disabled = false;
-    els.saveBtn.disabled = false;
-    return;
-  }
-  els.saveStatus.textContent = "Saving…";
+  let leavingToPhase2 = false;
   try {
+    const nErrors = await countGlossaryErrors();
+    if (nErrors && !confirm(`${nErrors} glossary line(s) have format problems (marked ✖ below) and will be IGNORED during translation. Continue anyway?`)) {
+      return;
+    }
+    els.saveStatus.textContent = "Saving…";
     await saveAllEdits();
+    els.saveStatus.textContent = "";
+    const r = await fetch(`/api/continue/${currentJobId}`, { method: "POST" });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      showError(`Continue failed: ${err.error || r.statusText}`);
+      return;
+    }
+    leavingToPhase2 = true;
+    els.edit.hidden = true;
+    resetCancelJobBtn();
+    els.progress.hidden = false;
+    els.progressTitle.textContent = "Progress · Phase 2: translating";
+    els.log.textContent = "";
+    startPolling();
   } catch (err) {
-    els.saveStatus.textContent = `Save failed: ${err.message}`;
-    els.continueBtn.disabled = false;
-    els.cancelBtn.disabled = false;
-    els.saveBtn.disabled = false;
-    return;
+    els.saveStatus.textContent = `Continue failed: ${err.message}`;
+  } finally {
+    if (!leavingToPhase2) {
+      els.continueBtn.disabled = false;
+      els.cancelBtn.disabled = false;
+      els.saveBtn.disabled = false;
+    }
   }
-  els.saveStatus.textContent = "";
-  // Kick off Phase 2.
-  const r = await fetch(`/api/continue/${currentJobId}`, { method: "POST" });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    showError(`Continue failed: ${err.error || r.statusText}`);
-    els.continueBtn.disabled = false;
-    els.cancelBtn.disabled = false;
-    els.saveBtn.disabled = false;
-    return;
-  }
-  els.edit.hidden = true;
-  resetCancelJobBtn();
-  els.progress.hidden = false;
-  els.progressTitle.textContent = "Progress · Phase 2: translating";
-  els.log.textContent = "";
-  startPolling();
 });
 
 els.cancelBtn.addEventListener("click", async () => {
@@ -897,5 +1071,6 @@ async function pollPull() {
 populateLangs();
 setDefaultOutputDir();
 refreshOllamaStatus();
+refreshGlobalGlossaryHint();
 // Refresh status every 5s so the pill stays current if Ollama goes up/down.
 setInterval(refreshOllamaStatus, 5000);

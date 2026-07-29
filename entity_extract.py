@@ -433,7 +433,7 @@ class DocumentReviewer:
         return DocumentReviewer._fold_key(" ".join(s.split()))
 
     def _drop_absent_terms(self, segment: str, keep: set[str], groups: list[tuple[str, ...]]) -> tuple[set[str], list[tuple[str, ...]]]:
-        """Presence filter: discard any identified term that does not actually occur in the segment (accent/case-insensitive). A "found" term absent from the passage is invented, e.g. copied from the prompt's examples or hallucinated, and must not reach the glossary."""
+        """Discard identified terms that do not occur in the segment (accent/case-insensitive): absent terms were invented, e.g. copied from prompt examples or hallucinated."""
         folded_segment = self._presence_fold(segment)
         present = lambda term: self._presence_fold(term) in folded_segment
         surviving_keep = {t for t in keep if present(t)}
@@ -951,28 +951,73 @@ class DocumentReviewer:
             primary_entries: list[GlossaryEntry],
             symbolic_entries: list[GlossaryEntry],
             user_glossary: DomainGlossary | None,
-            log_label: str,) -> DomainGlossary:
+            log_label: str,
+            primary_origin: str = "draft") -> DomainGlossary:
         """Merge LLM/loaded entries + symbolic supplement + user glossary.
 
         Order in the final glossary: primary entries first, then any symbolic entries that don't collide, then user-provided entries at the end.
         """
         user_sources: set[str] = set()
+        user_by_key: dict[str, GlossaryEntry] = {}
         if user_glossary:
             for entry in user_glossary._entries:
                 for t in entry.source_terms:
                     user_sources.add(t.lower())
+                    user_by_key[t.lower()] = entry
 
         kept: list[GlossaryEntry] = []
+        review_notes: list[str] = []
+        draft_suggestions: dict[int, str] = {}   # id(user entry) -> differing target proposed by this document's automated review
         seen_sources: set[str] = set(user_sources)
         for entry in primary_entries + symbolic_entries:
-            if any(t.lower() in seen_sources for t in entry.source_terms):
+            colliding = {t.lower() for t in entry.source_terms} & user_sources
+            if colliding:
+                # The user's entry stays authoritative, but the document may link extra variants to the same entity (e.g. the spelled-out form of a user-defined abbreviation). Graft those onto the user entry so they inherit the user's target. Only when the collision maps to a single user entry; otherwise the grouping is ambiguous and the decision is routed to the human as a comment in the glossary file.
+                owners = {id(user_by_key[k]): user_by_key[k] for k in colliding}
+                leftover = [t for t in entry.source_terms if t.lower() not in seen_sources]
+                if len(owners) > 1 and leftover:
+                    names = " and ".join(o.source_terms[0] for o in owners.values())
+                    note = f"The document also uses {', '.join(repr(t) for t in leftover)} for the entity defined as {names}. To enforce a translation for it, add it to one of those entries with | , or give it its own line."
+                    review_notes.append(note)
+                    print(f"  [entity_extract] {note}")
+                if len(owners) == 1:
+                    owner = next(iter(owners.values()))
+                    # Record a differing draft target for the per-term note composed below.
+                    if entry.kind == "require" and entry.target:
+                        accepted = {DocumentReviewer._fold_key(x) for x in [owner.target] + owner.target_alts}
+                        if DocumentReviewer._fold_key(entry.target) not in accepted:
+                            draft_suggestions[id(owner)] = entry.target
+                    for t in entry.source_terms:
+                        if t.lower() not in seen_sources:
+                            owner.source_terms.append(t)
+                            seen_sources.add(t.lower())
+                            user_sources.add(t.lower())
+                            user_by_key[t.lower()] = owner
+                            print(f"  [entity_extract] linked document variant {t!r} to user-provided entry {owner.source_terms[0]!r}")
                 continue
             kept.append(entry)
             for t in entry.source_terms:
                 seen_sources.add(t.lower())
 
         user_entries = user_glossary._entries if user_glossary else []
+        # Fresh extractions are drafts; user entries are approved. Loaded files pass primary_origin="" (unknown).
+        for e in kept:
+            e.origin = primary_origin
+        for e in user_entries:
+            e.origin = "approved"
+        # One note per term: current version, then each known alternative, then the action.
+        for e in user_entries:
+            alternatives = [f"{label[0].upper() + label[1:]} says \"{tgt}\"." for label, tgt in getattr(e, "alt_versions", [])]
+            if id(e) in draft_suggestions:
+                alternatives.append(f"This document's automated review suggested \"{draft_suggestions[id(e)]}\".")
+            if alternatives:
+                note = (f"This run's combined glossary translates {e.source_terms[0]!r} as \"{e.target}\" (from {e.source or 'your provided glossary'}). "
+                        + " ".join(alternatives)
+                        + f" To use another version for this run, edit the {e.source_terms[0]!r} line.")
+                review_notes.append(note)
+                print(f"  [entity_extract] {note}")
         combined = DomainGlossary(kept + user_entries)
+        combined.review_notes = review_notes
         print(f"  [entity_extract] {log_label}: {len(kept)} primary + {len(user_entries)} user-provided = {len(combined._entries)} total entries")
         return combined
 
@@ -1006,6 +1051,7 @@ class DocumentReviewer:
             loaded = DomainGlossary.load(glossary_path)
             combined = self._merge_into_final_glossary(
                 loaded._entries, sym_entries, user_glossary,
+                primary_origin="",
                 log_label="loaded glossary",
             )
             return combined

@@ -36,6 +36,8 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True
 # ---- Ollama integration ---------------------------------------------------
 
 OLLAMA_URL = "http://localhost:11434"
+# Persistent per-user glossary, human-curated: entries are only added via the explicit button on the review screen, never automatically.
+GLOBAL_GLOSSARY_PATH = Path.home() / ".olladoc" / "global_glossary.txt"
 MENUBAR_LOG = Path.home() / ".ollama" / "logs" / "server.log"
 OLLADOC_LOG = Path(tempfile.gettempdir()) / "olladoc_ollama.log"
 OLLAMA_PID_FILE = Path(tempfile.gettempdir()) / "olladoc_ollama.pid"
@@ -305,6 +307,23 @@ def _run_phase(job: Job, phases: tuple[str, ...]):
     stream = _LineStream(job)
     s = job.settings
     is_phase1_only = phases == ("build_glossary",)
+    # Human-provided glossaries folded in as the base: global first, uploaded base second (base takes precedence on conflict), automated entries fill the gaps.
+    user_glossary = None
+    if "build_glossary" in phases:
+        parts = []
+        if s.get("use_global_glossary") and GLOBAL_GLOSSARY_PATH.exists():
+            g = DomainGlossary.load(GLOBAL_GLOSSARY_PATH)
+            for e in g._entries:
+                e.source = "your global glossary"
+            parts.append(g)
+            print(f"  Using global glossary: {GLOBAL_GLOSSARY_PATH}", file=stream)
+        if s.get("base_glossary_text"):
+            b = DomainGlossary(DomainGlossary.parse_lines(s["base_glossary_text"]))
+            for e in b._entries:
+                e.source = "the base glossary you provided"
+            parts.append(b)
+            print("  Using uploaded base glossary.", file=stream)
+        user_glossary = DomainGlossary.combine(*parts)
     out_dir = Path(s.get("output_dir") or "translated").expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
     cancelled = False
@@ -347,6 +366,7 @@ def _run_phase(job: Job, phases: tuple[str, ...]):
                     timestamp=phase_timestamp,
                     domain=s.get("domain", DEFAULT_DOMAIN),
                     dump_dir=dump_dir,
+                    glossary=user_glossary,
                 )
             # Remember the (possibly timestamped) output path so Phase 2 / results use it.
             p.out_path = result.get("output") or out_path
@@ -443,7 +463,12 @@ def start_job():
         "timestamp": request.form.get("timestamp", "false") == "true",
         "domain": request.form.get("domain", DEFAULT_DOMAIN).strip(),
         "debug_dump": request.form.get("debug_dump", "false") == "true",
+        "use_global_glossary": request.form.get("use_global_glossary", "false") == "true",
+        "base_glossary_text": None,
     }
+    base_upload = request.files.get("base_glossary")
+    if base_upload and base_upload.filename:
+        settings["base_glossary_text"] = base_upload.read().decode("utf-8", errors="replace")
     job = Job(
         id=uuid.uuid4().hex,
         payloads=payloads,
@@ -506,9 +531,15 @@ def get_glossary(job_id, file_idx):
     p = job.payloads[file_idx]
     if not p.glossary_path or not Path(p.glossary_path).exists():
         return jsonify({"error": "no glossary yet"}), 404
+    raw = Path(p.glossary_path).read_text(encoding="utf-8")
+    # Decision notes are comments in the file (useful for CLI users), but the app lifts them out of the editable text and shows them as UI, so non-technical reviewers never have to reason about comment lines.
+    note_prefix = "# NEEDS A DECISION:"
+    notes = [line[len(note_prefix):].strip() for line in raw.splitlines() if line.startswith(note_prefix)]
+    content = "\n".join(line for line in raw.splitlines() if not line.startswith(note_prefix))
     return jsonify({
         "name": Path(p.glossary_path).name,
-        "content": Path(p.glossary_path).read_text(encoding="utf-8"),
+        "content": content,
+        "notes": notes,
     })
 
 
@@ -579,6 +610,27 @@ def cancel_job(job_id):
     with job.lock:
         job.log.append("Cancel requested, stopping after the current chunk…")
     return jsonify({"ok": True})
+
+
+@app.get("/api/global_glossary")
+def global_glossary_info():
+    """Existence, entry count, path, and content of the user's global glossary, for the Advanced-options hint and the view dialog."""
+    exists = GLOBAL_GLOSSARY_PATH.exists()
+    content = GLOBAL_GLOSSARY_PATH.read_text(encoding="utf-8") if exists else ""
+    count = len(DomainGlossary.parse_lines(content)) if exists else 0
+    return jsonify({"exists": exists, "entries": count, "path": str(GLOBAL_GLOSSARY_PATH), "content": content})
+
+
+@app.post("/api/global_glossary/add")
+def global_glossary_add():
+    """Append reviewed glossary entries to the global glossary. Body: {"content": str}. Only entries whose source terms are not already in the global file are added; existing entries are never modified."""
+    body = request.get_json(silent=True) or {}
+    entries = DomainGlossary.parse_lines(body.get("content", ""))
+    report = DomainGlossary.append_new_entries(GLOBAL_GLOSSARY_PATH, entries,
+                                               overwrite_terms=body.get("overwrite") or [])
+    report["total_parsed"] = len(entries)
+    report["path"] = str(GLOBAL_GLOSSARY_PATH)
+    return jsonify(report)
 
 
 @app.get("/api/prompt/preview")

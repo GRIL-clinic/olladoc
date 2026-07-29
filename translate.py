@@ -1046,6 +1046,8 @@ if __name__ == "__main__":
                         help="Integer seed for ollama generation (default 42).")
     parser.add_argument("--archive-glossary", metavar="PATH", default=None,
                         help="Copy the glossary file to PATH after Phase 2, then delete the working copy. Useful for dated archives, e.g. --archive-glossary archive/glossary_2026-06-21.txt.")
+    parser.add_argument("--base-glossary", metavar="PATH", default=None,
+                        help="Existing glossary file to fold in as a human-reviewed base. Its entries win over automatically extracted ones; the automatic pass only adds terms it does not already cover.")
     parser.add_argument("--dump-dir", metavar="PATH", default=None,
                         help="Write Phase 1 debug snapshots (per-segment prompts, raw LLM responses, parsed results) to this directory.")
     parser.add_argument("--domain", default=DEFAULT_DOMAIN,
@@ -1070,7 +1072,7 @@ if __name__ == "__main__":
             model=args.model, review_model=args.review_model,
             phases=phases,
             force_rebuild=args.force_rebuild,
-            glossary=False if args.no_glossary else None,
+            glossary=False if args.no_glossary else (args.base_glossary or None),
             seed=args.seed,
             keep_glossary=args.archive_glossary if args.archive_glossary else True,
             timestamp=args.timestamp,
