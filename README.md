@@ -89,7 +89,7 @@ See [Using the CLI](#using-the-cli) for flags, batch mode, and two-phase workflo
 
 ## Using the web app
 
-![olladoc web app](olladoc-screenshot.png)
+![olladoc web app](screenshots/main_interface.png)
 
 **Ollama status bar (top).** Shows whether `http://localhost:11434` is reachable. Start / Stop control an Ollama process olladoc manages itself; Stop is only enabled for processes it launched. "View logs" tails either olladoc's log or `~/.ollama/logs/server.log`. "Pull a new model" downloads from [ollama.com/library](https://ollama.com/library) with a live log and cancel button.
 
@@ -104,6 +104,8 @@ See [Using the CLI](#using-the-cli) for flags, batch mode, and two-phase workflo
 - Glossary sources: fold in your global glossary (a personal term list stored at `~/.olladoc/global_glossary.txt`, viewable in place) and/or upload a base glossary file for the run. When the same term appears in more than one source, user-provided entries take precedence over automated ones, and the base glossary over the global.
 - Timestamp outputs: adds `_YYYY-MM-DD_HHMM` to filenames so repeat runs never overwrite earlier ones.
 - Debug snapshots: saves every glossary-building prompt and model response under the output folder.
+
+![Advanced options](screenshots/advanced_options.png)
 
 **Output folder.** Where translated `.docx` files land. Defaults to `./translated`.
 
