@@ -17,6 +17,7 @@ Use it from a point-and-click [web UI](#using-the-web-app) or the [command line]
 - [Run](#run)
 - [Using the web app](#using-the-web-app)
 - [Using the CLI](#using-the-cli)
+- [The glossary file](#the-glossary-file)
 - [Using the notebook](#using-the-notebook)
 - [Output](#output)
 - [Limitations](#limitations)
@@ -89,15 +90,21 @@ See [Using the CLI](#using-the-cli) for flags, batch mode, and two-phase workflo
 
 ## Using the web app
 
+### The interface, top to bottom
+
 <img src="screenshots/main_interface.png" alt="olladoc web app" width="650" />
 
-**Ollama status bar (top).** Shows whether `http://localhost:11434` is reachable. Start / Stop control an Ollama process olladoc manages itself; Stop is only enabled for processes it launched. "View logs" tails either olladoc's log or `~/.ollama/logs/server.log`. "Pull a new model" downloads from [ollama.com/library](https://ollama.com/library) with a live log and cancel button.
+**Ollama status bar.** Shows whether `http://localhost:11434` is reachable. Start / Stop control an Ollama process olladoc manages itself; Stop is only enabled for processes it launched. "View logs" tails either olladoc's log or `~/.ollama/logs/server.log`.
 
-**Upload and settings.** Drag-and-drop or browse, one file at a time (up to 200 MB). Source and target language pickers (default Spanish to English). Model dropdown lists installed Ollama models.
+**Document.** Drag-and-drop or browse, one file at a time (up to 200 MB).
 
-**Workflow modes.**
-- One-shot: Phase 1 (glossary building) straight into Phase 2 (translation) without stopping.
-- Two-phase: Stop after Phase 1, edit the glossary in the browser, then continue to Phase 2.
+**Languages.** Source and target languages.
+
+**Model.** The AI model that does the translating; the list shows what's installed. "Pull a new model" downloads another from [ollama.com/library](https://ollama.com/library).
+
+**Workflow.** Every run has two phases: Phase 1 builds the glossary, Phase 2 translates with it.
+- One-shot: both phases straight through.
+- Two-phase: pause in between, so you can review and edit the glossary before anything is translated.
 
 **Advanced options.**
 
@@ -110,23 +117,11 @@ See [Using the CLI](#using-the-cli) for flags, batch mode, and two-phase workflo
 
 **Output folder.** Where translated `.docx` files land. Defaults to `./translated`.
 
-**Glossary review (two-phase only).** Phase 1 pauses with the glossary in an editable text box. The format is documented in the file header:
+### After you hit Translate
 
-```
-TRANSLATE: source → target       (enforced; triggers retry on violation)
-KEEP: term                       (kept verbatim, never translated)
-PREFER: source → target          (soft hint included in the prompt)
-```
+**Progress.** A progress bar fills in as the document is translated, with the app's log below it.
 
-Multiple source variants of the same entity go on one line separated by `|`, e.g.:
-
-```
-TRANSLATE: Comisión Interamericana | CIDH | la Comisión → Inter-American Commission
-```
-
-Variants on one line share a single target. When two forms of the same entity need different renderings (e.g. `CIDH → IACHR` but the full name to the full English name), give each its own line instead. The target side can also list alternates, e.g. `TRANSLATE: la Comisión → the Inter-American Commission | IACHR`: any listed form satisfies the check, and the first is preferred.
-
-If you folded in a global or base glossary, the document's new terms appear first, above entries you already approved, and a notes card points out anything that needs a decision. For example, if the document suggests a different translation for a term than one you provided, the note shows both versions so you can choose which to use. "Add to global glossary" saves reviewed terms for future runs; if any clash with the global's existing entries, a dialog asks which version to keep, term by term.
+**Glossary review (two-phase only).** The run pauses after Phase 1 and shows a generated glossary in an editable text box. You can make any changes there, using the line format described in [The glossary file](#the-glossary-file). If you folded in a global or base glossary, the document's new terms appear first, above entries you already approved, and a notes card points out anything that needs a decision. For example, if the document suggests a different translation for a term than one you provided, the note shows both versions so you can choose which to use. "Add to global glossary" saves reviewed terms for future runs; if any clash with the global's existing entries, a dialog asks which version to keep, term by term.
 
 <!-- SCREENSHOT: glossary review panel. -->
 
@@ -157,6 +152,8 @@ python3 translate.py informe.docx informe_en.docx --translate-only
 # → same paths again; picks up your edited informe_en_glossary.txt
 ```
 
+The file's line format is described in [The glossary file](#the-glossary-file).
+
 Flags for two-phase workflow:
 
 - `--glossary-only`: run Phase 1 only, then stop (lets you edit the glossary)
@@ -186,6 +183,24 @@ python3 batch_translate.py INPUT_DIR OUTPUT_DIR [--source-lang X] [--target-lang
 Defaults: Spanish to English; model `translategemma`.
 
 NOTE: translation keeps the model and app busy for the whole run, and a batch of documents can take hours of sustained CPU/GPU load. Consider running overnight or splitting large batches.
+
+## The glossary file
+
+The glossary is the list of key terms olladoc must handle consistently, noting which to translate (and how) and which to keep as is. The web app's review screen and the CLI's two-phase workflow both edit the same plain-text file, where each line is one rule:
+
+```
+TRANSLATE: source → target       (enforced; triggers retry on violation)
+KEEP: term                       (kept verbatim, never translated)
+PREFER: source → target          (soft hint included in the prompt)
+```
+
+Multiple source variants of the same entity go on one line separated by `|`, e.g.:
+
+```
+TRANSLATE: Comisión Interamericana | CIDH | la Comisión → Inter-American Commission
+```
+
+Variants on one line share a single target. When two forms of the same entity need different renderings (e.g. `CIDH → IACHR` but the full name to the full English name), give each its own line instead. The target side can also list alternates, e.g. `TRANSLATE: la Comisión → the Inter-American Commission | IACHR`: any listed form satisfies the check, and the first is preferred.
 
 ## Using the notebook
 
