@@ -277,4 +277,4 @@ The web UI is a Flask + JS shell around `translate_document`.
 
 ## License
 
-[BSD 3-Clause](LICENSE). © 2026 Global Rights Innovation Lab, UC Berkeley.
+[BSD 3-Clause](LICENSE). © 2026 Global Rights Innovation Lab Clinic, UC Berkeley.
