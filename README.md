@@ -28,40 +28,33 @@ Use it from a point-and-click [web UI](#using-the-web-app) or the [command line]
 
 ## User Manual
 
-You can download our user manual and watch step-by-step videos of the installation.
+If you prefer a step-by-step description, you can download our user manul here: [User-Manual-olladoc.pdf](https://github.com/user-attachments/files/33456340/User-Manual-olladoc.pdf)
 
 
-[User-Manual-olladoc.pdf](https://github.com/user-attachments/files/33456340/User-Manual-olladoc.pdf)
+You can also follow the videos for each step
 
-
+- Installing Ollama
 https://github.com/user-attachments/assets/ca0817c5-e45c-4f59-bdf5-8d0097d58a08
 
-
-
+- Downloading Olladoc
 https://github.com/user-attachments/assets/99286221-e81e-4a9a-ad52-927feff509a9
 
-
-
+- Opening a terminal
 https://github.com/user-attachments/assets/7e12a8a2-6e6b-4a6e-a667-c61be703e3e9
 
-
-
+- Verifying your Python version
 https://github.com/user-attachments/assets/c6735e30-67ed-4f88-8693-e4cfefb71e1d
 
-
-
+- Downloading Python (if needed)
 https://github.com/user-attachments/assets/02725203-157b-4fad-8b74-f9e80a235f01
 
-
-
+- Installing the requirements
 https://github.com/user-attachments/assets/2e02529e-17e3-45a6-b3ea-3d8e2c887c43
 
-
-
+- Opening Olladoc
 https://github.com/user-attachments/assets/5238a310-5232-4baf-831a-0b7ecb4d03a6
 
-
-
+- Using Olladoc
 https://github.com/user-attachments/assets/14339b7d-b94d-4a17-8334-b4a853c3559d
 
 
