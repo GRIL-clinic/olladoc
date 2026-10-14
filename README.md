@@ -13,6 +13,7 @@ Use it from a point-and-click [web UI](#using-the-web-app) or the [command line]
 
 ## Contents
 
+- [User Manual](#user-manual)
 - [Setup](#setup)
 - [Run](#run)
 - [Using the web app](#using-the-web-app)
@@ -25,12 +26,55 @@ Use it from a point-and-click [web UI](#using-the-web-app) or the [command line]
 - [Modules](#modules)
 - [License](#license)
 
+## User Manual
+
+You can download our user manual and watch step-by-step videos of the installation.
+
+
+[User-Manual-olladoc.pdf](https://github.com/user-attachments/files/33456340/User-Manual-olladoc.pdf)
+
+
+https://github.com/user-attachments/assets/ca0817c5-e45c-4f59-bdf5-8d0097d58a08
+
+
+
+https://github.com/user-attachments/assets/99286221-e81e-4a9a-ad52-927feff509a9
+
+
+
+https://github.com/user-attachments/assets/7e12a8a2-6e6b-4a6e-a667-c61be703e3e9
+
+
+
+https://github.com/user-attachments/assets/c6735e30-67ed-4f88-8693-e4cfefb71e1d
+
+
+
+https://github.com/user-attachments/assets/02725203-157b-4fad-8b74-f9e80a235f01
+
+
+
+https://github.com/user-attachments/assets/2e02529e-17e3-45a6-b3ea-3d8e2c887c43
+
+
+
+https://github.com/user-attachments/assets/5238a310-5232-4baf-831a-0b7ecb4d03a6
+
+
+
+https://github.com/user-attachments/assets/14339b7d-b94d-4a17-8334-b4a853c3559d
+
+
+
+
+
 ## Setup
 
 **1. Install Ollama**
 
 - macOS: `brew install ollama`
 - Other: download from https://ollama.com/download
+
 
 **2. Create a Python environment (Python 3.10+)**
 
